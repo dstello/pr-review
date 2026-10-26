@@ -1,0 +1,692 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/assets/primer.css">
+<link rel="stylesheet" href="/assets/primer-dark.css">
+<link rel="stylesheet" href="/assets/diff2html.min.css">
+<style>
+  /* Theme is pinned dark on #app so host-injected root theme attributes can't flip Primer's tokens. */
+  html, body { height: 100%; margin: 0; background: #0d1117; }
+  #app {
+    height: 100%; display: flex; flex-direction: column; color-scheme: dark;
+    background: var(--bgColor-default); color: var(--fgColor-default);
+  }
+  #app ::selection { background: var(--bgColor-accent-muted); }
+  #app :focus-visible { outline: 2px solid var(--focus-outlineColor, var(--fgColor-accent)); outline-offset: -2px; }
+  #bar { display: flex; gap: var(--base-size-12, 12px); align-items: center; padding: var(--base-size-8, 8px) var(--base-size-16, 16px); border-bottom: 1px solid var(--borderColor-default); }
+  #bar h1 { font-size: var(--text-title-size-small, 16px); font-weight: 600; margin: 0; flex: 1; min-width: 0; }
+  #model-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 16px; border-bottom: 1px solid var(--borderColor-default); }
+  #model-settings label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  #model-settings select { max-width: min(260px, 65vw); }
+  #model-error { margin: 0; font-size: 12px; }
+  #scroller { flex: 1; overflow: auto; display: grid; grid-template-columns: var(--lw, minmax(0, 35fr)) minmax(0, 65fr) var(--tw, 240px); align-items: start; }
+  #scroller:has(#tree[hidden]) { grid-template-columns: var(--lw, minmax(0, 35fr)) minmax(0, 65fr); }
+  #left { position: relative; min-width: 0; min-height: 100%; border-right: 1px solid var(--borderColor-default); }
+  #tabs { position: sticky; top: 0; z-index: 2; background: var(--bgColor-default); padding: 0 var(--base-size-16, 16px); }
+  #review { padding: var(--base-size-16, 16px); max-width: 72ch; }
+  #review > * + * { margin-top: var(--base-size-16, 16px); }
+  #review dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--base-size-12, 12px); margin: 8px 0 0; }
+  #review dt { color: var(--fgColor-muted); font-weight: 400; }
+  #review dd { margin: 0; }
+  #review ul { padding-left: 20px; margin: 0; }
+  .loc { font: 12px var(--fontStack-monospace); color: var(--fgColor-accent); background: none; border: 0; padding: 0; cursor: pointer; }
+  .loc:hover { text-decoration: underline; }
+  #notes { position: relative; padding: var(--base-size-16, 16px); }
+  #tree { position: sticky; top: 0; min-width: 0; height: var(--sh, 100vh); font-size: 12px; border-left: 1px solid var(--borderColor-default); }
+  #tree-body { height: 100%; overflow: auto; padding: var(--base-size-8, 8px); }
+  .resizer { position: absolute; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 3; touch-action: none; }
+  .resizer:hover, .resizer:focus-visible, .resizer.drag { background: var(--bgColor-accent-emphasis); outline: none; }
+  #left > .resizer { right: -4px; } #tree > .resizer { left: -4px; }
+  #scroller.resizing { cursor: col-resize; user-select: none; }
+  #tree summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; padding: 2px 4px; border-radius: 6px; color: var(--fgColor-muted); }
+  #tree details > div { padding-left: var(--base-size-12, 12px); }
+  #tree button { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; font: inherit; color: inherit; border: 0; background: none; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+  #tree summary:hover, #tree button:hover { background: var(--bgColor-neutral-muted); }
+  #tree button span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.blocking, .dot.error { background: var(--fgColor-danger); } .dot.warning { background: var(--fgColor-attention); } .dot.info { background: var(--fgColor-accent); }
+  #diff { min-width: 0; padding: var(--base-size-8, 8px); }
+  /* diff2html line numbers are position:absolute; without a positioned ancestor inside #scroller they don't scroll with it. */
+  #diff .d2h-file-wrapper { position: relative; margin-bottom: var(--base-size-16, 16px); border-radius: 6px; }
+  #diff .d2h-code-line-ctn { tab-size: 4; }
+  #diff .d2h-tag { display: none; }
+  .octicon { fill: var(--fgColor-muted); flex: none; vertical-align: text-bottom; }
+  #tree button.muted { color: var(--fgColor-muted); }
+  #files svg { display: block; }
+
+  /* Saved reviews menu and the empty view. */
+  #reviews .SelectMenu-modal { width: 440px; max-height: min(70vh, 560px); }
+  #reviews .SelectMenu-filter { display: block; }
+  .review-item { display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px 4px; border-bottom: 1px solid var(--borderColor-muted); }
+  .review-item:last-child { border-bottom: 0; }
+  .review-open { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; text-align: left; font: inherit; color: inherit; background: none; border: 0; border-radius: 6px; cursor: pointer; }
+  .review-open:hover { background: var(--bgColor-neutral-muted); }
+  .review-open .octicon { margin-top: 2px; visibility: hidden; }
+  .review-item[aria-checked="true"] .review-open .octicon { visibility: visible; }
+  .review-open .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  #app.empty #scroller, #app.empty .pr-only { display: none !important; }
+  #app:not(.empty) #empty { display: none; }
+  #empty .new-review { max-width: 560px; margin: 16px auto 0; }
+
+  /* File headers and code, matched to github.com's diff view. */
+  #diff .d2h-file-wrapper { border-color: var(--borderColor-default); }
+  #diff .d2h-file-header {
+    position: sticky; top: 0; z-index: 2; height: auto; min-height: 40px; align-items: center; gap: 4px; padding: 4px 8px 4px 4px;
+    font-family: inherit; background: var(--bgColor-muted); border-bottom: 1px solid var(--borderColor-default); border-radius: 6px 6px 0 0;
+  }
+  #diff .d2h-file-name-wrapper { flex: 1; min-width: 0; gap: 8px; font-size: 12px; }
+  #diff .d2h-file-name { font-family: var(--fontStack-monospace); font-weight: 600; color: var(--fgColor-default); }
+  #diff .folded .d2h-file-header { border-bottom: 0; border-radius: 6px; }
+  #diff .folded > :not(.d2h-file-header) { display: none; }
+  .fold { display: flex; padding: 4px; border: 0; border-radius: 6px; background: none; cursor: pointer; }
+  .fold:hover { background: var(--bgColor-neutral-muted); }
+  .fold svg { transition: transform 120ms cubic-bezier(0.25, 1, 0.5, 1); }
+  .folded .fold svg { transform: rotate(-90deg); }
+  .diffstat { display: flex; align-items: center; gap: 1px; flex: none; font: 12px var(--fontStack-monospace); }
+  .diffstat b { font-weight: 600; margin-right: 4px; }
+  .diffstat i { width: 8px; height: 8px; border-radius: 2px; background: var(--bgColor-neutral-muted); }
+  .diffstat i.a { background: var(--bgColor-success-emphasis); } .diffstat i.d { background: var(--bgColor-danger-emphasis); }
+  .viewed { flex: none; display: flex; align-items: center; gap: 6px; font-weight: 400; }
+  .viewed input { margin: 0; accent-color: var(--bgColor-accent-emphasis); }
+  #diff .d2h-diff-table { font: 12px/20px var(--fontStack-monospace); }
+  #diff .d2h-code-linenumber, #diff .d2h-code-side-linenumber { border: 0; padding: 0 10px; color: var(--fgColor-muted); background-color: var(--bgColor-default); }
+  #diff .d2h-code-side-linenumber { width: 50px; }
+  #diff .d2h-code-linenumber { width: 100px; padding: 0; }
+  #diff .line-num1, #diff .line-num2 { width: 50px; padding: 0 10px; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; }
+  #diff .d2h-code-side-line { padding: 0 10px 0 60px; width: calc(100% - 70px); }
+  #diff .d2h-code-line { padding: 0 10px 0 110px; width: calc(100% - 120px); }
+  #diff .d2h-code-line-prefix { padding-right: 8px; }
+  /* Line-number cells overlay the row's translucent line color, so paint their own number color over the page background. */
+  #diff td.d2h-ins:is(.d2h-code-linenumber, .d2h-code-side-linenumber) { color: var(--diffBlob-additionNum-fgColor); background-image: linear-gradient(var(--diffBlob-additionNum-bgColor) 0 0); }
+  #diff td.d2h-del:is(.d2h-code-linenumber, .d2h-code-side-linenumber) { color: var(--diffBlob-deletionNum-fgColor); background-image: linear-gradient(var(--diffBlob-deletionNum-bgColor) 0 0); }
+  #diff td.d2h-info:is(.d2h-code-linenumber, .d2h-code-side-linenumber) { background-color: var(--diffBlob-hunkNum-bgColor-rest); }
+  #diff td.d2h-info { color: var(--diffBlob-hunkLine-fgColor); }
+  #diff :is(.d2h-code-side-emptyplaceholder, .d2h-emptyplaceholder) { background-color: var(--diffBlob-emptyLine-bgColor); border-color: transparent; }
+  #tree summary .octicon { margin: 0 4px; }
+  .hunk-note { position: absolute; left: var(--base-size-16, 16px); right: var(--base-size-16, 16px); }
+  .hunk-note .Box-header { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; }
+  .hunk-note .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hunk-note .range { margin-left: auto; flex: none; color: var(--fgColor-muted); font: 12px var(--fontStack-monospace); font-variant-numeric: tabular-nums; }
+  .hunk-note .Box-body { padding: 12px; }
+  .hunk-note .summary { margin: 0; font-size: 14px; line-height: 1.5; color: var(--fgColor-default); max-width: 70ch; }
+  .hunk-note .summary + .item, .hunk-note .item + .summary { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--borderColor-muted); }
+  .item + .item { margin-top: var(--base-size-12, 12px); }
+  .item p { margin: 4px 0 0; }
+  .item .Label { margin-right: 6px; }
+
+  /* diff2html dark scheme → Primer diffBlob tokens */
+  #app .d2h-dark-color-scheme {
+    --d2h-dark-bg-color: var(--bgColor-default);
+    --d2h-dark-color: var(--fgColor-default);
+    --d2h-dark-border-color: var(--borderColor-default);
+    --d2h-dark-dim-color: var(--fgColor-muted);
+    --d2h-dark-line-border-color: var(--borderColor-muted);
+    --d2h-dark-file-header-bg-color: var(--bgColor-muted);
+    --d2h-dark-file-header-border-color: var(--borderColor-default);
+    --d2h-dark-empty-placeholder-bg-color: var(--diffBlob-emptyLine-bgColor);
+    --d2h-dark-empty-placeholder-border-color: var(--borderColor-muted);
+    --d2h-dark-ins-bg-color: var(--diffBlob-additionLine-bgColor);
+    --d2h-dark-ins-border-color: var(--diffBlob-additionNum-bgColor);
+    --d2h-dark-ins-highlight-bg-color: var(--diffBlob-additionWord-bgColor);
+    --d2h-dark-ins-label-color: var(--fgColor-success);
+    --d2h-dark-del-bg-color: var(--diffBlob-deletionLine-bgColor);
+    --d2h-dark-del-border-color: var(--diffBlob-deletionNum-bgColor);
+    --d2h-dark-del-highlight-bg-color: var(--diffBlob-deletionWord-bgColor);
+    --d2h-dark-del-label-color: var(--fgColor-danger);
+    --d2h-dark-info-bg-color: var(--diffBlob-hunkLine-bgColor);
+    --d2h-dark-info-border-color: var(--borderColor-muted);
+    --d2h-dark-change-label-color: var(--fgColor-attention);
+    --d2h-dark-change-ins-color: var(--diffBlob-additionLine-bgColor);
+    --d2h-dark-change-del-color: var(--diffBlob-deletionLine-bgColor);
+    --d2h-dark-moved-label-color: var(--fgColor-accent);
+    --d2h-dark-selected-color: var(--bgColor-accent-muted);
+  }
+  #app .d2h-code-line, #app .d2h-code-side-line, #app .d2h-code-linenumber, #app .d2h-code-side-linenumber { font-family: var(--fontStack-monospace); }
+
+  /* highlight.js tokens → Primer prettylights syntax colors */
+  #diff .hljs-comment, #diff .hljs-quote { color: var(--color-prettylights-syntax-comment); }
+  #diff .hljs-keyword, #diff .hljs-selector-tag, #diff .hljs-type, #diff .hljs-template-tag, #diff .hljs-meta .hljs-keyword { color: var(--color-prettylights-syntax-keyword); }
+  #diff .hljs-string, #diff .hljs-regexp, #diff .hljs-meta .hljs-string { color: var(--color-prettylights-syntax-string); }
+  #diff .hljs-number, #diff .hljs-literal, #diff .hljs-attr, #diff .hljs-attribute, #diff .hljs-variable.constant_, #diff .hljs-built_in, #diff .hljs-selector-attr, #diff .hljs-selector-class, #diff .hljs-selector-id, #diff .hljs-symbol { color: var(--color-prettylights-syntax-constant); }
+  #diff .hljs-title, #diff .hljs-title.function_, #diff .hljs-title.class_, #diff .hljs-section { color: var(--color-prettylights-syntax-entity); }
+  #diff .hljs-name, #diff .hljs-tag, #diff .hljs-selector-pseudo { color: var(--color-prettylights-syntax-entity-tag); }
+  #diff .hljs-variable, #diff .hljs-params, #diff .hljs-subst, #diff .hljs-template-variable { color: var(--color-prettylights-syntax-storage-modifier-import); }
+  #diff .hljs-meta { color: var(--color-prettylights-syntax-meta, var(--color-prettylights-syntax-constant)); }
+  #diff .hljs-bullet { color: var(--color-prettylights-syntax-markup-list); }
+  #diff .hljs-emphasis { font-style: italic; } #diff .hljs-strong { font-weight: 600; }
+  #diff .hljs-addition { color: var(--color-prettylights-syntax-markup-inserted-text); }
+  #diff .hljs-deletion { color: var(--color-prettylights-syntax-markup-deleted-text); }
+</style>
+</head>
+<body>
+<div id="app" data-color-mode="dark" data-dark-theme="dark" data-light-theme="dark">
+  <div id="bar">
+    <details id="reviews" class="details-reset details-overlay position-relative">
+      <summary class="btn btn-sm" aria-haspopup="true"><span id="reviews-icon"></span> Reviews <span id="review-count" class="Counter"></span> <span class="dropdown-caret"></span></summary>
+      <div class="SelectMenu"><div class="SelectMenu-modal">
+        <header class="SelectMenu-header"><h3 class="SelectMenu-title">New review</h3></header>
+        <div class="SelectMenu-filter">
+          <form class="new-review d-flex" style="gap:8px"><input name="pr" class="form-control input-sm flex-1" type="text" placeholder="https://github.com/owner/repo/pull/123" aria-label="Pull request URL" autocomplete="off" required><button class="btn btn-sm btn-primary" type="submit">Start review</button></form>
+          <p class="new-error color-fg-danger f6 mt-2 mb-0" hidden></p>
+        </div>
+        <div class="SelectMenu-divider">Saved reviews</div>
+        <div id="review-list" class="SelectMenu-list" role="menu"></div>
+      </div></div>
+    </details>
+    <h1 class="Truncate"><span id="title" class="Truncate-text">Loading pull request<span class="AnimatedEllipsis"></span></span></h1>
+    <span id="status" class="color-fg-muted f6 pr-only"></span>
+    <div class="BtnGroup pr-only" role="group" aria-label="Diff layout">
+      <button id="split" class="btn btn-sm BtnGroup-item" type="button" aria-selected="false">Split</button>
+      <button id="unified" class="btn btn-sm BtnGroup-item" type="button" aria-selected="true">Unified</button>
+    </div>
+    <button id="tests" class="btn btn-sm pr-only" type="button" aria-pressed="false" hidden><span id="tests-label">Hide tests</span> <span id="test-count" class="Counter"></span></button>
+    <button id="rerun" class="btn btn-sm pr-only" type="button">Analyze again</button>
+    <button id="files" class="btn btn-sm btn-invisible pr-only" type="button" aria-controls="tree" aria-expanded="true"></button>
+  </div>
+  <div id="model-settings" aria-label="Analysis models">
+    <label for="review-model">Review model <select id="review-model" class="form-select select-sm" disabled><option>Loading models</option></select></label>
+    <label for="hunk-model">Inline notes model <select id="hunk-model" class="form-select select-sm" disabled><option>Loading models</option></select></label>
+    <p id="model-error" class="color-fg-danger" role="status"></p>
+  </div>
+  <div id="empty" class="blankslate blankslate-spacious">
+    <h2 class="blankslate-heading">Start a review</h2>
+    <p id="empty-note">Paste a pull request URL. You can also open a saved review from Reviews.</p>
+    <form class="new-review d-flex" style="gap:8px"><input name="pr" class="form-control flex-1" type="text" placeholder="https://github.com/owner/repo/pull/123" aria-label="Pull request URL" autocomplete="off" required><button class="btn btn-primary" type="submit">Start review</button></form>
+    <p class="new-error color-fg-danger f6 mt-2 mb-0" hidden></p>
+  </div>
+  <div id="scroller">
+    <div id="left">
+      <nav id="tabs" class="UnderlineNav"><div class="UnderlineNav-body" role="tablist" aria-label="Review views">
+        <button id="tab-review" class="UnderlineNav-item" type="button" role="tab" aria-controls="review" aria-selected="true">Review</button>
+        <button id="tab-code" class="UnderlineNav-item" type="button" role="tab" aria-controls="notes" aria-selected="false">Code <span id="code-count" class="Counter"></span></button>
+      </div></nav>
+      <section id="review" role="tabpanel" aria-labelledby="tab-review"></section>
+      <section id="notes" role="tabpanel" aria-labelledby="tab-code" hidden></section>
+      <div class="resizer" data-pane="left" role="separator" aria-orientation="vertical" aria-label="Resize the review pane" tabindex="0"></div>
+    </div>
+    <div id="diff"></div>
+    <nav id="tree" aria-label="Changed files"><div class="resizer" data-pane="tree" role="separator" aria-orientation="vertical" aria-label="Resize the file tree" tabindex="0"></div><div id="tree-body"></div></nav>
+  </div>
+</div>
+<script type="module">
+import { modelChoices, validateModels } from "/models.mjs";
+const key = new URLSearchParams(location.search).get("key");
+const q = `key=${encodeURIComponent(key)}`;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const md = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+const hunkSummary = (s) => s.replace(/^this hunk\s+(\w)/i, (_, c) => c.toUpperCase());
+const view = { format: localStorage.getItem("prr-format") ?? "line-by-line", hideTests: localStorage.getItem("prr-tests") === "1" };
+const TEST_RE = /(^|\/)(__tests__|__mocks__|tests?|spec|testdata|fixtures)\/|[._-](test|spec|stories)\.[^/]+$|(^|\/)test_[^/]+$|_test\.go$|Tests?\.(cs|java|kt|swift)$/i;
+const isTest = (fi) => TEST_RE.test(files[fi].path);
+const shown = (fi) => !(view.hideTests && isTest(fi));
+// Viewed files are stored per PR in this browser only. Viewing a file folds it; a fold alone lasts for this page load.
+const VIEWED_KEY = `prr-viewed:${key}`;
+const viewed = new Set(JSON.parse(localStorage.getItem(VIEWED_KEY) ?? "[]"));
+const folded = new Set(viewed);
+const isOpen = (fi) => shown(fi) && !folded.has(files[fi].path);
+let state, files = [];
+// Each diff format is drawn once and kept; switching formats only toggles which pane shows.
+const diffPanes = {};
+const wrappers = () => diffPanes[view.format]?.querySelectorAll(".d2h-file-wrapper") ?? [];
+let layoutFrame = 0;
+const queueLayout = () => { layoutFrame ||= requestAnimationFrame(() => { layoutFrame = 0; layoutNotes(); }); };
+
+// GitHub Octicons (file-16, file-directory-fill-16), as in the github.com file tree.
+const svg = (d) => `<svg class="octicon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="${d}"/></svg>`;
+const ICON = {
+  file: svg("M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"),
+  chevron: svg("M12.78 5.22a.749.749 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.06 0L3.22 6.28a.749.749 0 1 1 1.06-1.06L8 8.939l3.72-3.719a.749.749 0 0 1 1.06 0Z"),
+  eyeClosed: svg("M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.832.88 9.577.43 8.9a1.619 1.619 0 0 1 0-1.797c.353-.533.995-1.42 1.868-2.305L.31 3.357A.75.75 0 0 1 .143 2.31Zm1.536 5.622A.12.12 0 0 0 1.657 8c0 .021.006.045.022.068.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688a14.207 14.207 0 0 0-1.85 2.244ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 1 1-.473-1.423A6.207 6.207 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z"),
+  sidebarCollapse: svg("M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"),
+  sidebarExpand: svg("m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"),
+  pr: svg("M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"),
+  check: svg("M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"),
+  trash: svg("M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"),
+  dir: svg("M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"),
+};
+
+function renderDiff() {
+  for (const [format, el] of Object.entries(diffPanes)) el.hidden = format !== view.format;
+  if (diffPanes[view.format]) return applyFiles();
+  const pane = diffPanes[view.format] = $("diff").appendChild(document.createElement("div"));
+  const ui = new Diff2HtmlUI(pane, state.diff, {
+    drawFileList: false, outputFormat: view.format, matching: "lines", highlight: true,
+    colorScheme: "dark", synchronisedScroll: true, fileContentToggle: false,
+  });
+  ui.draw();
+  ui.highlightCode();
+  wrappers().forEach((w, fi) => {
+    const hd = w.querySelector(".d2h-file-header");
+    w.dataset.fi = fi;
+    w.hunkRows = [...(w.querySelector(".d2h-file-side-diff") ?? w).querySelectorAll("tbody tr")].filter((tr) => tr.querySelector("td.d2h-info"));
+    hd.querySelector("svg.d2h-icon")?.remove();
+    hd.insertAdjacentHTML("afterbegin", `<button class="fold" type="button">${ICON.chevron}</button>`);
+    hd.querySelector(".d2h-file-name").insertAdjacentHTML("afterend", diffstat(files[fi]));
+    hd.insertAdjacentHTML("beforeend", `<label class="viewed btn btn-sm"><input type="checkbox"> Viewed</label>`);
+  });
+  applyFiles();
+}
+
+function diffstat(f) {
+  const { add: a, del: d } = f;
+  let g = Math.round((a / (a + d || 1)) * 5);
+  if (a && !g) g = 1;
+  if (d && g === 5) g = 4;
+  const r = a + d ? 5 - g : 0;
+  const blocks = "a".repeat(g) + "d".repeat(r) + "n".repeat(5 - g - r);
+  return `<span class="diffstat" aria-label="${a} lines added, ${d} lines removed"><b class="color-fg-success">+${a}</b><b class="color-fg-danger">−${d}</b>${[...blocks].map((c) => `<i class="${c}"></i>`).join("")}</span>`;
+}
+
+function applyFiles() {
+  wrappers().forEach((w) => {
+    const fi = +w.dataset.fi, path = files[fi].path, fold = folded.has(path);
+    w.hidden = !shown(fi);
+    w.classList.toggle("folded", fold);
+    w.querySelector(".fold").setAttribute("aria-expanded", !fold);
+    w.querySelector(".fold").setAttribute("aria-label", `${fold ? "Unfold" : "Fold"} ${path}`);
+    w.querySelector(".viewed input").checked = viewed.has(path);
+  });
+  queueLayout();
+}
+
+$("diff").addEventListener("click", (e) => {
+  const w = e.target.closest(".d2h-file-wrapper");
+  if (!w || !e.target.closest(".fold")) return;
+  const path = files[w.dataset.fi].path;
+  folded.has(path) ? folded.delete(path) : folded.add(path);
+  applyFiles();
+});
+$("diff").addEventListener("change", (e) => {
+  const w = e.target.closest(".d2h-file-wrapper");
+  if (!w || !e.target.matches(".viewed input")) return;
+  const path = files[w.dataset.fi].path;
+  for (const set of [viewed, folded]) e.target.checked ? set.add(path) : set.delete(path);
+  localStorage.setItem(VIEWED_KEY, JSON.stringify([...viewed]));
+  applyFiles();
+  if (w.getBoundingClientRect().top < $("scroller").getBoundingClientRect().top) w.scrollIntoView({ block: "start" });
+});
+
+function renderTree() {
+  const root = {};
+  files.forEach((f, i) => {
+    const parts = f.path.split("/");
+    let node = root;
+    for (const p of parts.slice(0, -1)) node = node[p + "/"] ??= {};
+    node[parts.at(-1)] = i;
+  });
+  const sev = (i) => {
+    const s = new Set((state.review?.findings ?? []).filter((x) => x.fi === i).map((x) => x.severity));
+    return SEV_ORDER.find((x) => s.has(x));
+  };
+  // Merge folders that have only one child folder, as on github.com (packages/dashboard-surface).
+  const compact = (node) => Object.fromEntries(Object.entries(node).map(([name, v]) => {
+    if (typeof v === "number") return [name, v];
+    while (Object.keys(v).length === 1 && typeof Object.values(v)[0] !== "number") { const [k] = Object.keys(v); name += k; v = v[k]; }
+    return [name, compact(v)];
+  }));
+  const walk = (node) => Object.entries(node).sort(([a, x], [b, y]) => (typeof x === "number") - (typeof y === "number") || a.localeCompare(b))
+    .map(([name, v]) => typeof v === "number"
+      ? `<button data-fi="${v}" ${shown(v) ? `title="${esc(files[v].path)}">${ICON.file}` : `class="muted" title="${esc(files[v].path)} is hidden. Select it to show test files.">${ICON.eyeClosed}`}<span>${esc(name)}</span>${sev(v) ? `<i class="dot ${sev(v)}"></i>` : ""}</button>`
+      : `<details open><summary>${ICON.dir}${esc(name.slice(0, -1))}</summary><div>${walk(v)}</div></details>`).join("");
+  $("tree-body").innerHTML = walk(compact(root));
+}
+
+const scrollToFile = (fi) => wrappers()[fi]?.scrollIntoView({ block: "start" });
+$("tree").addEventListener("click", (e) => {
+  const fi = e.target.closest("button")?.dataset.fi;
+  if (fi == null) return;
+  if (!shown(fi)) setTests(false);
+  scrollToFile(fi);
+});
+
+const LABEL = { blocking: "Label--danger", error: "Label--danger", warning: "Label--attention", info: "Label--accent" };
+const SEV_NAME = { blocking: "Blocking", error: "Error", warning: "Warning", info: "Info" };
+const SEV_ORDER = ["blocking", "error", "warning", "info"];
+const sevLabel = (x) => `<span class="Label ${LABEL[x.severity] ?? ""}">${SEV_NAME[x.severity] ?? esc(x.severity)}</span>`;
+const loc = (x) => {
+  const text = `${esc(x.file)}${x.line ? `:${x.line}` : ""}`;
+  return x.fi >= 0 ? `<button class="loc" type="button" data-fi="${x.fi}">${text}</button>` : `<code class="color-fg-muted f6">${text}</code>`;
+};
+// Older cached reviews used { title, detail }; newer ones follow the /pr-review finding bar.
+const body = (x) => x.scenario ? `${md(x.scenario)} ${md(x.impact)}` : md(x.detail);
+
+function findingHtml(x) {
+  return `<div class="item">${sevLabel(x)}<strong>${md(x.title)}</strong>${x.line ? ` <span class="color-fg-muted f6">L${x.line}</span>` : ""}`
+    + `<p>${body(x)}</p>${x.fix ? `<p><span class="color-fg-muted">Fix:</span> ${md(x.fix)}</p>` : ""}</div>`;
+}
+
+function hunkCoverage() {
+  const c = state.coverage;
+  return c && c.hunks > c.maxHunks ? `<div class="flash flash-warn">The analysis explains only the first ${c.maxHunks} of ${c.hunks} hunks. The other hunks have no explanation.</div>` : "";
+}
+function reviewCoverage() {
+  const c = state.coverage;
+  return c?.reviewTruncated ? `<div class="flash flash-warn">The diff is too large. The review covers only the first ${c.maxReviewChars.toLocaleString("en-US")} characters.</div>` : "";
+}
+
+function renderReview() {
+  const r = state.review;
+  const error = (state.error ? `<div class="flash flash-error">The analysis failed: ${esc(state.error)}</div>` : "") + reviewCoverage() + hunkCoverage();
+  if (!r) {
+    $("review").innerHTML = error || (state.status === "running"
+      ? `<p class="color-fg-muted">${esc(state.models?.reviewModel)} is reviewing the pull request<span class="AnimatedEllipsis"></span></p>`
+      : `<p class="color-fg-muted">No review is available. Click Analyze again to start a review.</p>`);
+    return;
+  }
+  const findings = [...r.findings].sort((a, b) => SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity));
+  const row = (x) => `<div class="Box-row"><div class="d-flex flex-items-center flex-wrap" style="gap:6px">${sevLabel(x)}${x.category ? `<span class="Label">${esc(x.category)}</span>` : ""}<strong>${md(x.title)}</strong></div>`
+    + `<div class="mt-1">${loc(x)}</div>`
+    + (x.scenario
+      ? `<dl><dt>Scenario</dt><dd>${md(x.scenario)}</dd><dt>Impact</dt><dd>${md(x.impact)}</dd><dt>Evidence</dt><dd>${md(x.evidence)}</dd><dt>Fix</dt><dd>${md(x.fix)}</dd></dl>`
+      : `<p class="mt-2 mb-0">${md(x.detail)}</p>`)
+    + `</div>`;
+  $("review").innerHTML = error
+    + `<div class="Box"><div class="Box-header d-flex flex-items-center"><h2 class="Box-title flex-1">Review</h2><span class="color-fg-muted f6">${esc(state.models?.reviewModel)}</span></div>`
+    + `<div class="Box-body"><dl class="mt-0"><dt>Intent</dt><dd>${md(r.intent) || "—"}</dd><dt>Approach</dt><dd>${md(r.approach) || "—"}</dd></dl></div></div>`
+    + `<div class="Box"><div class="Box-header"><h2 class="Box-title">Findings <span class="Counter">${findings.length}</span></h2></div>`
+    + (findings.length ? findings.map(row).join("") : `<div class="Box-body color-fg-muted">The review found no confirmed problems.</div>`) + `</div>`
+    + (r.openQuestions?.length ? `<div><h3 class="f5 mb-2">Open questions</h3><ul>${r.openQuestions.map((q) => `<li>${md(q)}</li>`).join("")}</ul></div>` : "")
+    + `<div><h3 class="f5 mb-2">Summary of risks</h3><p class="mb-0">${md(r.bottomLine ?? r.overview)}</p></div>`;
+}
+
+$("review").addEventListener("click", (e) => {
+  const fi = e.target.closest(".loc")?.dataset.fi;
+  if (fi >= 0) { setTab("code"); scrollToFile(fi); }
+});
+
+// Anchor each hunk's notes next to its @@ row in the diff; cards are pushed down when they'd overlap.
+function layoutNotes() {
+  const notesEl = $("notes");
+  const groups = new Map();
+  const add = (fi, hi, html) => {
+    const k = `${fi}:${hi}`;
+    if (!groups.has(k)) groups.set(k, { fi, hi, html: [] });
+    groups.get(k).html.push(html);
+  };
+  for (const [k, n] of Object.entries(state.notes ?? {})) {
+    if (n.trivial) continue;
+    const [fi, hi] = k.split(":").map(Number);
+    if (!isOpen(fi)) continue;
+    add(fi, hi, `<p class="summary">${md(hunkSummary(n.summary))}</p>`);
+  }
+  const findings = state.review?.findings ?? [];
+  for (const x of findings) if (x.fi >= 0 && isOpen(x.fi)) add(x.fi, x.hi, findingHtml(x));
+  $("code-count").textContent = findings.length || "";
+
+  const unplaced = findings.filter((x) => x.fi < 0);
+  const top = hunkCoverage() + (unplaced.length
+    ? `<div class="Box mb-3"><div class="Box-header"><h2 class="Box-title">Findings outside a hunk</h2></div>${unplaced.map((x) => `<div class="Box-row">${findingHtml(x)}</div>`).join("")}</div>`
+    : "");
+  if (notesEl.hidden) { notesEl.innerHTML = top; return; }
+
+  // Read every anchor position, write all cards once, read all card heights, then write their positions.
+  const ws = wrappers();
+  const base = notesEl.getBoundingClientRect().top;
+  const anchors = [...groups.values()].map((g) => {
+    const w = ws[g.fi];
+    if (!w) return null;
+    const el = g.hi >= 0 ? w.hunkRows[g.hi] ?? w : w;
+    return { ...g, top: el.getBoundingClientRect().top - base };
+  }).filter(Boolean).sort((a, b) => a.top - b.top);
+
+  notesEl.innerHTML = `<div id="notes-top">${top}</div>` + anchors.map((a) => {
+    const f = files[a.fi], h = f.hunks[a.hi];
+    return `<div class="hunk-note Box"><div class="Box-header" title="${esc(f.path)}">${ICON.file}<span class="name">${esc(f.path.split("/").pop())}</span>${h ? `<span class="range">${h.start === h.end ? `L${h.start}` : `L${h.start}–${h.end}`}</span>` : ""}</div>`
+      + `<div class="Box-body">${a.html.join("")}</div></div>`;
+  }).join("");
+  const topEl = $("notes-top"), cards = [...notesEl.querySelectorAll(".hunk-note")];
+  let floor = topEl.offsetTop + topEl.offsetHeight + (top ? 8 : 0);
+  const heights = cards.map((c) => c.offsetHeight);
+  cards.forEach((card, i) => {
+    const y = Math.max(anchors[i].top, floor);
+    card.style.top = y + "px";
+    floor = y + heights[i] + 8;
+  });
+  notesEl.style.minHeight = floor + "px";
+}
+
+function setTab(tab) {
+  localStorage.setItem("prr-tab", tab);
+  $("tab-review").setAttribute("aria-selected", tab === "review");
+  $("tab-code").setAttribute("aria-selected", tab === "code");
+  $("review").hidden = tab !== "review";
+  $("notes").hidden = tab !== "code";
+  if (state) queueLayout();
+}
+$("tab-review").onclick = () => setTab("review");
+$("tab-code").onclick = () => setTab("code");
+
+function setTree(open) {
+  localStorage.setItem("prr-tree", open ? "1" : "0");
+  $("tree").hidden = !open;
+  const label = open ? "Hide file tree" : "Show file tree";
+  $("files").setAttribute("aria-expanded", open);
+  $("files").setAttribute("aria-label", label);
+  $("files").title = label;
+  $("files").innerHTML = open ? ICON.sidebarCollapse : ICON.sidebarExpand;
+  if (state) queueLayout();
+}
+$("files").onclick = () => setTree($("tree").hidden);
+
+// Drag or use the arrow keys on a gutter to resize a pane. Double-click resets it.
+const PANE = { left: { v: "--lw", min: 280 }, tree: { v: "--tw", min: 140 } };
+function setPane(pane, px, persist = true) {
+  const sc = $("scroller"), other = pane === "left" ? ($("tree").hidden ? 0 : $("tree").offsetWidth) : $("left").offsetWidth;
+  const w = px == null ? null : Math.round(Math.max(PANE[pane].min, Math.min(px, sc.clientWidth - other - 320)));
+  w == null ? sc.style.removeProperty(PANE[pane].v) : sc.style.setProperty(PANE[pane].v, w + "px");
+  if (persist) w == null ? localStorage.removeItem("prr-w-" + pane) : localStorage.setItem("prr-w-" + pane, w);
+  if (state) queueLayout();
+}
+const paneWidth = (pane) => (pane === "left" ? $("left") : $("tree")).offsetWidth;
+document.querySelectorAll(".resizer").forEach((g) => {
+  const pane = g.dataset.pane, sc = $("scroller");
+  g.onpointerdown = (e) => {
+    g.setPointerCapture(e.pointerId); g.classList.add("drag"); sc.classList.add("resizing");
+    g.onpointermove = (m) => setPane(pane, pane === "left" ? m.clientX - sc.getBoundingClientRect().left : sc.getBoundingClientRect().right - m.clientX, false);
+  };
+  g.onpointerup = () => {
+    if (g.onpointermove) localStorage.setItem("prr-w-" + pane, paneWidth(pane));
+    g.onpointermove = null; g.classList.remove("drag"); sc.classList.remove("resizing");
+  };
+  g.ondblclick = () => setPane(pane, null);
+  g.onkeydown = (e) => {
+    const d = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+    if (d) { e.preventDefault(); setPane(pane, paneWidth(pane) + (pane === "left" ? d : -d)); }
+  };
+});
+
+function renderHeader() {
+  const m = state.meta;
+  $("title").innerHTML = `<a class="Link--primary" href="${esc(m.url)}" target="_blank">${esc(m.title)}</a> <span class="color-fg-muted text-normal">${esc(key)} · ${esc(m.headRefName)} → ${esc(m.baseRefName)}</span>`;
+  $("status").innerHTML = state.status === "running"
+    ? `Analyzing <span class="Counter">${state.progress.done}/${state.progress.total}</span>`
+    : state.status === "error" ? `<span class="color-fg-danger">The analysis failed</span>`
+    : state.status === "done" ? `${esc(state.models.hunkModel)} + ${esc(state.models.reviewModel)}` : "";
+  $("rerun").disabled = state.status === "running";
+}
+
+function setFormat(format) {
+  view.format = format;
+  localStorage.setItem("prr-format", format);
+  $("split").setAttribute("aria-selected", format === "side-by-side");
+  $("unified").setAttribute("aria-selected", format === "line-by-line");
+  renderDiff();
+}
+$("split").onclick = () => setFormat("side-by-side");
+$("unified").onclick = () => setFormat("line-by-line");
+function setTests(hide) {
+  view.hideTests = hide;
+  localStorage.setItem("prr-tests", hide ? "1" : "0");
+  const n = files.filter((_, fi) => isTest(fi)).length;
+  $("tests").hidden = !n;
+  $("test-count").textContent = n;
+  $("tests").setAttribute("aria-pressed", hide);
+  $("tests-label").textContent = hide ? "Show tests" : "Hide tests";
+  renderTree();
+  applyFiles();
+}
+$("tests").onclick = () => setTests(!view.hideTests);
+$("rerun").onclick = async () => {
+  try {
+    await api(`/api/analyze?${q}`, { method: "POST", body: JSON.stringify(selectedModels()) });
+  } catch (error) {
+    $("model-error").textContent = error.message;
+  }
+};
+
+const sizeVar = () => document.documentElement.style.setProperty("--sh", $("scroller").clientHeight + "px");
+new ResizeObserver(() => { sizeVar(); state && queueLayout(); }).observe($("scroller"));
+
+// Saved reviews: the menu lists every saved review; opening one reloads the page with its key.
+const inst = new URLSearchParams(location.search).get("inst");
+const go = (k) => {
+  const p = new URLSearchParams();
+  if (k) p.set("key", k);
+  if (inst) p.set("inst", inst);
+  location.search = p;
+};
+// An old canvas server (loaded before these endpoints existed) answers with plain text, not JSON.
+const api = async (path, init) => {
+  const r = await fetch(path, init).catch(() => {
+    throw new Error("The canvas server is not running. Close this canvas and open it again.");
+  });
+  const text = await r.text();
+  let v;
+  try { v = JSON.parse(text); } catch {
+    throw new Error(r.status === 404 ? "This canvas runs an old version of the extension. Open the canvas in a new session." : text || `The request failed (${r.status}).`);
+  }
+  if (!r.ok) throw new Error(v.error ?? `The request failed (${r.status}).`);
+  return v;
+};
+const openReview = async (body) => go((await api("/api/open", { method: "POST", body: JSON.stringify({ ...body, instance: inst }) })).key);
+let catalog = [], modelLoadError = "";
+const modelSelects = { reviewModel: $("review-model"), hunkModel: $("hunk-model") };
+const selectedModels = () => {
+  if (modelLoadError) throw new Error(modelLoadError);
+  return validateModels(catalog, Object.fromEntries(Object.entries(modelSelects).map(([role, el]) => [role, el.value])));
+};
+function refreshModels() {
+  for (const [role, el] of Object.entries(modelSelects)) {
+    const selected = el.value;
+    const choices = modelChoices(catalog, role, selected);
+    el.innerHTML = (choices.some((m) => m.id === selected) ? "" : `<option value="${esc(selected)}" disabled>${esc(selected || "Choose a model")} — unavailable</option>`)
+      + choices.map((m) => `<option value="${esc(m.id)}">${esc(m.name ?? m.id)}</option>`).join("");
+    el.value = selected;
+  }
+  try { selectedModels(); $("model-error").textContent = ""; }
+  catch (error) { $("model-error").textContent = error.message; }
+}
+async function loadModels() {
+  try {
+    const result = await api("/api/models");
+    catalog = result.models;
+    for (const [role, el] of Object.entries(modelSelects)) {
+      const selected = localStorage.getItem(`prr-${role}`) ?? state?.models?.[role] ?? result.defaults[role];
+      el.innerHTML = `<option value="${esc(selected)}">${esc(selected)}</option>`;
+      el.disabled = false;
+      el.onchange = () => { localStorage.setItem(`prr-${role}`, el.value); refreshModels(); };
+    }
+    refreshModels();
+  } catch (error) {
+    modelLoadError = `Cannot load models: ${error.message}`;
+    $("model-error").textContent = modelLoadError;
+  }
+}
+document.querySelectorAll(".new-review").forEach((form) => {
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = form.nextElementSibling, btn = form.querySelector("button");
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    err.hidden = true;
+    try { await openReview({ pr: form.pr.value, ...selectedModels() }); } catch (x) {
+      err.textContent = x.message;
+      err.hidden = false;
+      btn.disabled = false;
+      btn.textContent = "Start review";
+    }
+  };
+});
+
+const when = (t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const reviewStatus = (r) => r.status === "running" ? "Analyzing" : r.status === "error" ? "Failed"
+  : `${r.findings} ${r.findings === 1 ? "finding" : "findings"}`;
+async function renderReviews() {
+  let list;
+  try { list = await api("/api/reviews"); } catch (x) {
+    $("review-list").innerHTML = `<div class="SelectMenu-blankslate color-fg-danger">${esc(x.message)}</div>`;
+    return;
+  }
+  $("review-count").textContent = list.length || "";
+  $("review-list").innerHTML = list.length ? list.map((r) => {
+    const current = r.key === key && (!r.file || !state?.file || r.file === state.file);
+    return `<div class="review-item" role="menuitemradio" aria-checked="${current}">`
+      + `<button class="review-open" type="button" data-key="${esc(r.key)}" data-file="${esc(r.file ?? "")}">${ICON.check}<span class="min-width-0 flex-1">`
+      + `<span class="name">${esc(r.title)}</span><span class="d-block f6 color-fg-muted">${esc(r.key)} · ${reviewStatus(r)} · ${when(r.updatedAt)}</span></span></button>`
+      + (r.file ? `<button class="review-delete btn-octicon" type="button" data-file="${esc(r.file)}" aria-label="Delete the saved review of ${esc(r.key)}">${ICON.trash}</button>` : "")
+      + `</div>`;
+  }).join("") : `<div class="SelectMenu-blankslate">There are no saved reviews.</div>`;
+}
+$("review-list").addEventListener("click", async (e) => {
+  const open = e.target.closest(".review-open"), del = e.target.closest(".review-delete");
+  if (open) return open.dataset.file ? openReview({ file: open.dataset.file }).catch((x) => alert(x.message)) : go(open.dataset.key);
+  if (!del) return;
+  // Two clicks delete: the first click changes the icon to a "Delete" button.
+  if (!del.dataset.armed) {
+    del.dataset.armed = "1";
+    del.className = "review-delete btn btn-sm btn-danger";
+    del.textContent = "Delete";
+    return;
+  }
+  try { await api(`/api/reviews?file=${encodeURIComponent(del.dataset.file)}`, { method: "DELETE" }); } catch (x) {
+    del.textContent = x.message;
+    return;
+  }
+  if (del.dataset.file === state?.file) return go(null);
+  renderReviews();
+});
+$("reviews-icon").outerHTML = ICON.pr;
+$("reviews").addEventListener("toggle", () => {
+  if (!$("reviews").open) return;
+  renderReviews();
+  $("reviews").querySelector("input").focus();
+});
+document.addEventListener("click", (e) => { if ($("reviews").open && !e.composedPath().includes($("reviews"))) $("reviews").open = false; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("reviews").open = false; });
+
+const res = key ? await fetch(`/api/state?${q}`) : null;
+if (!res?.ok) {
+  $("app").classList.add("empty");
+  $("title").textContent = "PR Review";
+  if (key) $("empty-note").textContent = `The review of ${key} is not loaded. Start the review again, or open a saved review from Reviews.`;
+  if (key) $("empty").querySelector("input").value = key;
+  renderReviews();
+} else {
+state = await res.json();
+files = state.files;
+setTab(localStorage.getItem("prr-tab") ?? "review");
+setTree(localStorage.getItem("prr-tree") !== "0");
+for (const pane of ["left", "tree"]) { const w = localStorage.getItem("prr-w-" + pane); if (w) setPane(pane, +w); }
+renderHeader();
+renderReview();
+renderTree();
+setFormat(view.format);
+setTests(view.hideTests);
+
+let lastReview = JSON.stringify([state.review, state.error, state.status]);
+new EventSource(`/api/events?${q}`).onmessage = (e) => {
+  Object.assign(state, JSON.parse(e.data));
+  renderHeader();
+  const review = JSON.stringify([state.review, state.error, state.status]);
+  if (review !== lastReview) { lastReview = review; renderReview(); renderTree(); }
+  queueLayout();
+};
+renderReviews();
+}
+await loadModels();
+</script>
+<script src="/assets/diff2html-ui.min.js"></script>
+</body>
+</html>
