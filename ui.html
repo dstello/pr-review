@@ -116,6 +116,8 @@
   .item + .item { margin-top: var(--base-size-12, 12px); }
   .item p { margin: 4px 0 0; }
   .item .Label { margin-right: 6px; }
+  #left :is(p, dd, li) strong { font-weight: 600; color: var(--fgColor-default); }
+  #left :is(p, dd, li) u { text-decoration-color: var(--fgColor-attention); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
 
   /* diff2html dark scheme → Primer diffBlob tokens */
   #app .d2h-dark-color-scheme {
@@ -217,7 +219,12 @@ const key = new URLSearchParams(location.search).get("key");
 const q = `key=${encodeURIComponent(key)}`;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const md = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+// Inline markdown subset: `code`, **bold**, __underline__, *italic* / _italic_. Code spans are not formatted.
+const md = (s) => esc(s).split(/(`[^`]+`)/).map((part, i) => i % 2 ? `<code>${part.slice(1, -1)}</code>` : part
+  .replace(/\*\*(?=\S)(.+?)\*\*/g, "<strong>$1</strong>")
+  .replace(/(?<!\w)__(?=\S)(.+?)__(?!\w)/g, "<u>$1</u>")
+  .replace(/(?<![\w*])\*(?=\S)([^*]+?)\*(?![\w*])/g, "<em>$1</em>")
+  .replace(/(?<!\w)_(?=\S)([^_]+?)_(?!\w)/g, "<em>$1</em>")).join("");
 const hunkSummary = (s) => s.replace(/^this hunk\s+(\w)/i, (_, c) => c.toUpperCase());
 const view = { format: localStorage.getItem("prr-format") ?? "line-by-line", hideTests: localStorage.getItem("prr-tests") === "1" };
 const TEST_RE = /(^|\/)(__tests__|__mocks__|tests?|spec|testdata|fixtures)\/|[._-](test|spec|stories)\.[^/]+$|(^|\/)test_[^/]+$|_test\.go$|Tests?\.(cs|java|kt|swift)$/i;

@@ -25,6 +25,7 @@ const MAX_HUNKS = 80; // ponytail: hard cap on per-hunk agents; raise if large P
 const MAX_REVIEW_DIFF = 150_000; // ponytail: big-model prompt truncation; chunk the review if PRs exceed this
 // ASD-STE100 rules from the /ste-writing skill, applied to all model-written text.
 const STE = "Write all text in Simplified Technical English (ASD-STE100): active voice, one statement per sentence, max 20 words per sentence, short common words (use, start, get, show, make sure), one name for one thing, articles (a, an, the), no contractions, no semicolons, no marketing adjectives, American spelling.";
+const EMPHASIS = "Use light inline emphasis in text fields: **bold** for the key behavior change or risk, *italic* for conditions and qualifiers, __underline__ for the consequence the reader must not miss, `backticks` for identifiers. Use at most two or three emphasized phrases per field. No headings, lists, or links.";
 
 const states = new Map(); // "owner/repo#n" → state
 const clients = new Map(); // key → Set<res> (SSE)
@@ -193,7 +194,7 @@ const analyzeWorkflow = defineWorkflow({
             const f = st.files[fi], h = f.hunks[hi];
             const text = [h.header, ...h.lines].join("\n").slice(0, 8000);
             const r = await ctx.agent(
-                `${pr}\n\nExplain this single diff hunk from \`${f.path}\` for a code reviewer. Do not use tools or modify files; answer only from the hunk. ${STE}\n\n\`\`\`diff\n${text}\n\`\`\``,
+                `${pr}\n\nExplain this single diff hunk from \`${f.path}\` for a code reviewer. Do not use tools or modify files; answer only from the hunk. ${STE} ${EMPHASIS}\n\n\`\`\`diff\n${text}\n\`\`\``,
                 { label: `hunk ${fi}:${hi}`, model: st.models.hunkModel, reasoningEffort: "low", schema: HUNK_SCHEMA },
             );
             if (r) st.notes[`${fi}:${hi}`] = r;
@@ -214,6 +215,7 @@ const analyzeWorkflow = defineWorkflow({
                     "5. Keep a finding only with all five: concrete failing scenario, the changed line, impact, evidence, fix direction. Otherwise drop it or make it an open question.",
                     "Severity: blocking = incorrect behavior, security failure, data loss, or severe regression; warning = material risk or important behavior left untested. No informational findings. No style, formatting, import order, or naming nits. No praise. Use new-side line numbers.",
                     STE,
+                    EMPHASIS,
                     "```diff\n" + diff + "\n```",
                 ].join("\n\n"),
                 { label: "review", model: st.models.reviewModel, schema: REVIEW_SCHEMA },
