@@ -8,9 +8,9 @@ import { readFile, writeFile, mkdir, readdir, stat, unlink } from "node:fs/promi
 import { join, dirname, extname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { joinSession, createCanvas, defineWorkflow, CanvasError } from "@github/copilot-sdk/extension";
-import { parseDiff } from "./diff.mjs";
+import { hunkAt, parseDiff } from "./diff.mjs";
 import { HUNK_SCHEMA, REVIEW_SCHEMA } from "./schemas.mjs";
 import { gh } from "./gh.mjs";
 import { DEFAULT_MODELS, validateModels } from "./models.mjs";
@@ -19,6 +19,7 @@ import { modelCatalog } from "./model-catalog.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ARTIFACTS = join(process.env.COPILOT_HOME || join(homedir(), ".copilot"), "extensions", "pr-review", "artifacts");
 const WORKFLOW = "pr-review-canvas-analyze";
+const ASK_WORKFLOW = "pr-review-canvas-ask";
 // ponytail: generated/lock files are never worth a per-hunk explanation
 const SKIP_FILES = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock)$|\.min\.(js|css)$|\.snap$/;
 const MAX_HUNKS = 80; // ponytail: hard cap on per-hunk agents; raise if large PRs need full coverage
@@ -55,13 +56,13 @@ const cachePath = (st) => join(ARTIFACTS, `${st.repo.replace("/", "__")}-${st.nu
 
 async function save(st) {
     await mkdir(ARTIFACTS, { recursive: true });
-    const { key, repo, num, meta, diff, notes, review, models } = st;
-    await writeFile(cachePath(st), JSON.stringify({ key, repo, num, meta, diff, notes, review, models }));
+    const { key, repo, num, meta, diff, notes, review, models, chats } = st;
+    await writeFile(cachePath(st), JSON.stringify({ key, repo, num, meta, diff, notes, review, models, chats }));
 }
 
 function annotations(st) {
-    const { status, error, progress, notes, review, meta, models } = st;
-    return { status, error, progress, notes, review, meta, models, file: status === "done" ? basename(cachePath(st)) : null };
+    const { status, error, progress, notes, review, meta, models, chats } = st;
+    return { status, error, progress, notes, review, meta, models, chats, file: status === "done" ? basename(cachePath(st)) : null };
 }
 
 function push(st) {
@@ -70,15 +71,18 @@ function push(st) {
     for (const res of clients.get(st.key) ?? []) res.write(data);
 }
 
+// A saved thread can be "running" only if the process stopped during an answer.
+const settle = (chats = []) => chats.map((t) => (t.status === "running" ? { ...t, status: "error", error: "The answer was interrupted. Ask again." } : t));
+
 async function load(input) {
     const { repo, num, key } = parseRef(input.pr);
     const models = { hunkModel: input.hunkModel || DEFAULT_MODELS.hunkModel, reviewModel: input.reviewModel || DEFAULT_MODELS.reviewModel };
     const meta = JSON.parse(await gh(["pr", "view", num, "--repo", repo, "--json", "title,body,url,headRefOid,headRefName,baseRefName,author"]));
     const existing = states.get(key);
     if (existing && (existing.status === "running" || identity(existing.meta, existing.models) === identity(meta, models))) return existing;
-    const st = { key, repo, num, meta, models, notes: {}, review: null, status: "idle", error: null, progress: { done: 0, total: 0 } };
+    const st = { key, repo, num, meta, models, notes: {}, review: null, chats: [], status: "idle", error: null, progress: { done: 0, total: 0 } };
     const cached = await readFile(cachePath(st), "utf8").then(JSON.parse, () => null);
-    if (cached) Object.assign(st, { diff: cached.diff, notes: cached.notes, review: cached.review, status: "done" });
+    if (cached) Object.assign(st, { diff: cached.diff, notes: cached.notes, review: cached.review, chats: settle(cached.chats), status: "done" });
     else st.diff = await gh(["pr", "diff", num, "--repo", repo]);
     st.files = parseDiff(st.diff);
     states.set(key, st);
@@ -92,7 +96,7 @@ async function restore(file) {
     if (!SAVED_RE.test(file)) throw new CanvasError("invalid_review", `Unknown review "${file}"`);
     const c = JSON.parse(await readFile(join(ARTIFACTS, file), "utf8"));
     if (states.get(c.key)?.status === "running") return states.get(c.key);
-    const st = { ...c, status: "done", error: null, progress: { done: 0, total: 0 }, files: parseDiff(c.diff) };
+    const st = { ...c, chats: settle(c.chats), status: "done", error: null, progress: { done: 0, total: 0 }, files: parseDiff(c.diff) };
     states.set(st.key, st);
     return st;
 }
@@ -232,6 +236,69 @@ const analyzeWorkflow = defineWorkflow({
     },
 });
 
+// Line chat: one thread per question anchor; the small model answers by default.
+async function ask(st, { thread, fi, line, side, question, model }) {
+    question = String(question ?? "").trim();
+    if (!question) throw new CanvasError("invalid_question", "Type a question.");
+    let t = st.chats.find((c) => c.id === thread);
+    const chosen = model || t?.model || st.models.hunkModel;
+    validateModels(await modelCatalog(), { ...st.models, hunkModel: chosen });
+    if (!t) {
+        const f = st.files[fi];
+        if (!f || !(line > 0)) throw new CanvasError("invalid_line", "Pick a line in the diff.");
+        t = { id: /^[\w-]{1,64}$/.test(thread ?? "") ? thread : randomUUID(), fi, line, side: side === "old" ? "old" : "new", path: f.path, messages: [] };
+        st.chats.push(t);
+    }
+    if (t.status === "running") throw new CanvasError("busy", "Wait for the current answer.");
+    t.model = chosen;
+    t.messages.push({ role: "user", text: question });
+    Object.assign(t, { status: "running", error: null });
+    push(st);
+    (async () => {
+        try {
+            const run = await session.workflow.run(ASK_WORKFLOW, { args: { key: st.key, id: t.id }, notifyOnComplete: false });
+            if (run.status !== "completed") throw new Error(`question ${run.status}: ${JSON.stringify(run.failure ?? run.error ?? "")}`);
+            t.status = "done";
+        } catch (e) {
+            Object.assign(t, { status: "error", error: String(e?.message ?? e) });
+        }
+        if (st.status === "done") await save(st).catch(() => {});
+        push(st);
+    })();
+    return t.id;
+}
+
+const ANSWER_SCHEMA = { type: "object", required: ["answer"], properties: { answer: { type: "string" } }, additionalProperties: false };
+
+const askWorkflow = defineWorkflow({
+    meta: {
+        name: ASK_WORKFLOW,
+        description: "Internal to the PR Review canvas: answers a question about one diff line. args: { key: string, id: string }.",
+        phases: [{ title: "Answer" }],
+        argsSchema: { type: "object", required: ["key", "id"], properties: { key: { type: "string" }, id: { type: "string" } } },
+    },
+    run: async (ctx) => {
+        const st = states.get(ctx.args.key);
+        const t = st?.chats.find((c) => c.id === ctx.args.id);
+        if (!t) throw new Error(`Question ${ctx.args.id} is not loaded in the canvas`);
+        const hunk = (hunkAt(st.files[t.fi], t.line, t.side) ?? "").slice(0, 8000);
+        const history = t.messages.map((m) => `${m.role === "user" ? "Reviewer" : "You"}: ${m.text}`).join("\n\n");
+        const r = await ctx.agent(
+            [
+                `PR: ${st.meta.title} (${st.key})`,
+                `A code reviewer asks about line ${t.line} (${t.side} side) of \`${t.path}\`. The line is marked with ">>" in the hunk below. Answer the last question briefly and directly. You may read files in the working directory if it is this repository. Do not modify files, push, or post comments.`,
+                STE,
+                EMPHASIS,
+                "```diff\n" + hunk + "\n```",
+                history,
+            ].join("\n\n"),
+            { label: "ask", model: t.model, reasoningEffort: "low", schema: ANSWER_SCHEMA },
+        );
+        t.messages.push({ role: "assistant", text: r?.answer || "The model did not return an answer." });
+        return null;
+    },
+});
+
 // One shared loopback server; the PR key in the query string selects state.
 let baseUrl;
 async function ensureServer() {
@@ -287,6 +354,13 @@ async function ensureServer() {
                 const models = await readJson(req);
                 validateModels(await modelCatalog(), { ...st.models, ...models });
                 analyze(st, models);
+                return json(200, { ok: true });
+            }
+            if (url.pathname === "/api/ask" && req.method === "POST") return json(200, { thread: await ask(st, await readJson(req)) });
+            if (url.pathname === "/api/ask" && req.method === "DELETE") {
+                st.chats = st.chats.filter((c) => c.id !== url.searchParams.get("thread") || c.status === "running");
+                if (st.status === "done") await save(st);
+                push(st);
                 return json(200, { ok: true });
             }
             res.writeHead(404).end();
@@ -350,4 +424,4 @@ const canvas = createCanvas({
     onClose: (ctx) => void instances.delete(ctx.instanceId),
 });
 
-session = await joinSession({ canvases: [canvas], workflows: [analyzeWorkflow] });
+session = await joinSession({ canvases: [canvas], workflows: [analyzeWorkflow, askWorkflow] });

@@ -22,3 +22,21 @@ export function parseDiff(diff) {
     }
     return files;
 }
+
+// The hunk that holds `line` on `side` ("old" | "new"), with the target line marked ">>".
+export function hunkAt(file, line, side = "new") {
+    for (const h of file?.hunks ?? []) {
+        const m = h.header.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+        let o = +m[1], n = +m[2], hit = false;
+        const lines = h.lines.map((l) => {
+            const c = l[0];
+            const here = side === "old" ? c !== "+" && o === line : c !== "-" && n === line;
+            if (c !== "+") o++;
+            if (c !== "-") n++;
+            if (here && !hit) return (hit = true), ">>" + l;
+            return "  " + l;
+        });
+        if (hit) return [h.header, ...lines].join("\n");
+    }
+    return null;
+}
