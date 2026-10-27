@@ -20,15 +20,17 @@
   #model-settings label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
   #model-settings select { max-width: min(260px, 65vw); }
   #model-error { margin: 0; font-size: 12px; }
-  #scroller { flex: 1; overflow: auto; display: grid; grid-template-columns: var(--lw, minmax(0, 35fr)) minmax(0, 65fr) var(--tw, 240px); align-items: start; }
-  #scroller:has(#tree[hidden]) { grid-template-columns: var(--lw, minmax(0, 35fr)) minmax(0, 65fr); }
+  #scroller { flex: 1; overflow: auto; display: grid; grid-template-columns: var(--lw, minmax(320px, 35fr)) minmax(0, 65fr) var(--tw, 240px); align-items: start; }
+  #scroller:has(#tree[hidden]) { grid-template-columns: var(--lw, minmax(320px, 35fr)) minmax(0, 65fr); }
   #left { position: relative; min-width: 0; min-height: 100%; border-right: 1px solid var(--borderColor-default); }
   #tabs { position: sticky; top: 0; z-index: 2; background: var(--bgColor-default); padding: 0 var(--base-size-16, 16px); }
-  #review { padding: var(--base-size-16, 16px); max-width: 72ch; }
+  #review { position: sticky; top: var(--th, 48px); max-height: calc(var(--sh, 100vh) - var(--th, 48px)); overflow-y: auto; overscroll-behavior: contain; padding: var(--base-size-16, 16px); max-width: 72ch; }
   #review > * + * { margin-top: var(--base-size-16, 16px); }
-  #review dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--base-size-12, 12px); margin: 8px 0 0; }
+  #review dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px var(--base-size-12, 12px); margin: 8px 0 0; }
   #review dt { color: var(--fgColor-muted); font-weight: 400; }
-  #review dd { margin: 0; }
+  #review dd { margin: 0; min-width: 0; }
+  #review, #notes { overflow-wrap: anywhere; }
+  #review { overflow-x: hidden; }
   #review ul { padding-left: 20px; margin: 0; }
   .loc { font: 12px var(--fontStack-monospace); color: var(--fgColor-accent); background: none; border: 0; padding: 0; cursor: pointer; }
   .loc:hover { text-decoration: underline; }
@@ -471,7 +473,7 @@ function setTree(open) {
 $("files").onclick = () => setTree($("tree").hidden);
 
 // Drag or use the arrow keys on a gutter to resize a pane. Double-click resets it.
-const PANE = { left: { v: "--lw", min: 280 }, tree: { v: "--tw", min: 140 } };
+const PANE = { left: { v: "--lw", min: 320 }, tree: { v: "--tw", min: 140 } };
 function setPane(pane, px, persist = true) {
   const sc = $("scroller"), other = pane === "left" ? ($("tree").hidden ? 0 : $("tree").offsetWidth) : $("left").offsetWidth;
   const w = px == null ? null : Math.round(Math.max(PANE[pane].min, Math.min(px, sc.clientWidth - other - 320)));
@@ -536,7 +538,10 @@ $("rerun").onclick = async () => {
   }
 };
 
-const sizeVar = () => document.documentElement.style.setProperty("--sh", $("scroller").clientHeight + "px");
+const sizeVar = () => {
+  document.documentElement.style.setProperty("--sh", $("scroller").clientHeight + "px");
+  document.documentElement.style.setProperty("--th", $("tabs").offsetHeight + "px");
+};
 new ResizeObserver(() => { sizeVar(); state && queueLayout(); }).observe($("scroller"));
 
 // Saved reviews: the menu lists every saved review; opening one reloads the page with its key.
