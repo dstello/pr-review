@@ -25,7 +25,7 @@ const SKIP_FILES = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum
 const MAX_HUNKS = 80; // ponytail: hard cap on per-hunk agents; raise if large PRs need full coverage
 const MAX_REVIEW_DIFF = 150_000; // ponytail: big-model prompt truncation; chunk the review if PRs exceed this
 // ASD-STE100 rules from the /ste-writing skill, applied to all model-written text.
-const STE = "Write all text in Simplified Technical English (ASD-STE100): active voice, one statement per sentence, max 20 words per sentence, short common words (use, start, get, show, make sure), one name for one thing, articles (a, an, the), no contractions, no semicolons, no marketing adjectives, American spelling.";
+const STE = "Write all text in Simplified Technical English (ASD-STE100): active voice, one statement per sentence, max 20 words per sentence, short common words (use, start, get, show, make sure), one name for one thing, articles (a, an, the), no contractions, no semicolons, no marketing adjectives, American spelling. Use a verb for an action (\"check the input\", not \"perform a check of the input\"). No phrasal verbs, no \"-ing\" main verbs, no stacked auxiliaries (\"it is important to note that this may help to\"). No preamble, no summary, no closing remarks. Before you answer, split long sentences and remove filler words.";
 const EMPHASIS = "Use light inline emphasis in text fields: **bold** for the key behavior change or risk, *italic* for conditions and qualifiers, __underline__ for the consequence the reader must not miss, `backticks` for identifiers. Use at most two or three emphasized phrases per field. No headings, lists, or links.";
 
 const states = new Map(); // "owner/repo#n" → state
@@ -56,13 +56,13 @@ const cachePath = (st) => join(ARTIFACTS, `${st.repo.replace("/", "__")}-${st.nu
 
 async function save(st) {
     await mkdir(ARTIFACTS, { recursive: true });
-    const { key, repo, num, meta, diff, notes, review, models, chats } = st;
-    await writeFile(cachePath(st), JSON.stringify({ key, repo, num, meta, diff, notes, review, models, chats }));
+    const { key, repo, num, meta, stack, diff, notes, review, models, chats } = st;
+    await writeFile(cachePath(st), JSON.stringify({ key, repo, num, meta, stack, diff, notes, review, models, chats }));
 }
 
 function annotations(st) {
-    const { status, error, progress, notes, review, meta, models, chats } = st;
-    return { status, error, progress, notes, review, meta, models, chats, file: status === "done" ? basename(cachePath(st)) : null };
+    const { status, error, progress, notes, review, meta, stack, models, chats } = st;
+    return { status, error, progress, notes, review, meta, stack: stack ?? null, models, chats, file: status === "done" ? basename(cachePath(st)) : null };
 }
 
 function push(st) {
@@ -74,13 +74,27 @@ function push(st) {
 // A saved thread can be "running" only if the process stopped during an answer.
 const settle = (chats = []) => chats.map((t) => (t.status === "running" ? { ...t, status: "error", error: "The answer was interrupted. Ask again." } : t));
 
+// GitHub stacked pull requests: one query returns every layer. A PR outside a stack, or an API error, gives null.
+const STACK_QUERY = `query($owner: String!, $name: String!, $num: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $num) {
+  stack { number baseRefName entries(first: 50) { nodes { position pullRequest { number title headRefName state isDraft } } } } } } }`;
+async function stackOf(repo, num) {
+    const [owner, name] = repo.split("/");
+    try {
+        const s = JSON.parse(await gh(["api", "graphql", "-f", `query=${STACK_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `num=${num}`])).data.repository.pullRequest.stack;
+        return s && { number: s.number, base: s.baseRefName, entries: s.entries.nodes.map(({ position, pullRequest: p }) => ({ position, number: p.number, title: p.title, head: p.headRefName, state: p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state })) };
+    } catch {
+        return null;
+    }
+}
+
 async function load(input) {
     const { repo, num, key } = parseRef(input.pr);
     const models = { hunkModel: input.hunkModel || DEFAULT_MODELS.hunkModel, reviewModel: input.reviewModel || DEFAULT_MODELS.reviewModel };
-    const meta = JSON.parse(await gh(["pr", "view", num, "--repo", repo, "--json", "title,body,url,headRefOid,headRefName,baseRefName,author"]));
+    const [view, stack] = await Promise.all([gh(["pr", "view", num, "--repo", repo, "--json", "title,body,url,headRefOid,headRefName,baseRefName,author"]), stackOf(repo, num)]);
+    const meta = JSON.parse(view);
     const existing = states.get(key);
-    if (existing && (existing.status === "running" || identity(existing.meta, existing.models) === identity(meta, models))) return existing;
-    const st = { key, repo, num, meta, models, notes: {}, review: null, chats: [], status: "idle", error: null, progress: { done: 0, total: 0 } };
+    if (existing && (existing.status === "running" || identity(existing.meta, existing.models) === identity(meta, models))) return Object.assign(existing, { stack });
+    const st = { key, repo, num, meta, stack, models, notes: {}, review: null, chats: [], status: "idle", error: null, progress: { done: 0, total: 0 } };
     const cached = await readFile(cachePath(st), "utf8").then(JSON.parse, () => null);
     if (cached) Object.assign(st, { diff: cached.diff, notes: cached.notes, review: cached.review, chats: settle(cached.chats), status: "done" });
     else st.diff = await gh(["pr", "diff", num, "--repo", repo]);
@@ -120,9 +134,10 @@ async function removeReview(file) {
     for (const [key, st] of states) if (st.status !== "running" && basename(cachePath(st)) === file) states.delete(key);
 }
 
-async function openReview({ pr, file, instance, hunkModel, reviewModel }) {
+// The stack menu opens a layer with analyze: false, so moving through a stack costs no model calls.
+async function openReview({ pr, file, instance, hunkModel, reviewModel, analyze: run = true }) {
     const st = file ? await restore(file) : await load({ pr, hunkModel, reviewModel });
-    if (st.status === "idle") analyze(st);
+    if (st.status === "idle" && run) analyze(st);
     if (instance) instances.set(instance, st.key);
     return st;
 }
