@@ -2,6 +2,8 @@
 
 A GitHub Copilot canvas for reviewing pull requests beside their code changes.
 
+[Install the canvas](https://github.com/dstello/pr-review).
+
 - **Review:** a larger model explains the intent and reports risks with evidence and suggested fixes.
 - **Code:** a smaller model explains each hunk. Findings appear beside the relevant lines.
 - **Ask Copilot:** ask questions about a finding, hunk explanation, or code line, with context added automatically.
