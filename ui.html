@@ -173,6 +173,13 @@
   .chat-form textarea { width: 100%; min-height: 52px; resize: vertical; font-size: 13px; }
   .chat-actions { display: flex; align-items: center; gap: 8px; }
   .chat-actions select { flex: 1; min-width: 0; }
+  .finding-chat { margin-top: 8px; }
+  .finding-chat > summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12px; color: var(--fgColor-muted); cursor: pointer; list-style: none; border-radius: 4px; }
+  .finding-chat > summary::-webkit-details-marker { display: none; }
+  .finding-chat > summary:hover, .finding-chat[open] > summary { color: var(--fgColor-accent); }
+  .finding-chat > summary:focus-visible { outline: 2px solid var(--focus-outlineColor); outline-offset: 2px; }
+  .finding-chat .chat-msgs { margin-top: 8px; }
+  .finding-chat .chat-form { padding: 8px 0 0; }
   .hunk-note .item { border-radius: 4px; transition: background-color 300ms, box-shadow 300ms; }
   .hunk-note .item.focused { background: var(--bgColor-accent-muted); box-shadow: 0 0 0 6px var(--bgColor-accent-muted), 0 0 0 7px var(--borderColor-accent-emphasis); }
   @media (prefers-reduced-motion: reduce) { .hunk-note .item { transition: none; } }
@@ -508,7 +515,7 @@ const body = (x) => x.scenario ? `${md(x.scenario)} ${md(x.impact)}` : md(x.deta
 function findingHtml(x) {
   const i = state.review.findings.indexOf(x);
   return `<div class="item${i === focused ? " focused" : ""}" data-i="${i}" data-sev="${esc(x.severity)}">${sevLabel(x)}<strong>${md(x.title)}</strong>${x.line ? ` <span class="color-fg-muted f6">L${x.line}</span>` : ""}`
-    + `<p>${body(x)}</p>${x.fix ? `<p><span class="color-fg-muted">Fix:</span> ${md(x.fix)}</p>` : ""}</div>`;
+    + `<p>${body(x)}</p>${x.fix ? `<p><span class="color-fg-muted">Fix:</span> ${md(x.fix)}</p>` : ""}<div class="finding-chat-slot" data-i="${i}"></div></div>`;
 }
 
 function hunkCoverage() {
@@ -521,7 +528,7 @@ function reviewCoverage() {
 }
 
 function renderReview() {
-  const r = state.review;
+  const r = state.review, active = saveFocus();
   const error = (state.error ? `<div class="flash flash-error">The analysis failed: ${esc(state.error)}</div>` : "") + reviewCoverage() + hunkCoverage();
   if (!r) {
     $("review").innerHTML = error + (state.status === "idle" ? ANALYZE_PROMPT : error ? "" : state.status === "running"
@@ -535,7 +542,7 @@ function renderReview() {
     + (x.scenario
       ? `<dl><dt>Scenario</dt><dd>${md(x.scenario)}</dd><dt>Impact</dt><dd>${md(x.impact)}</dd><dt>Evidence</dt><dd>${md(x.evidence)}</dd><dt>Fix</dt><dd>${md(x.fix)}</dd></dl>`
       : `<p class="mt-2 mb-0">${md(x.detail)}</p>`)
-    + `</div>`;
+    + `<div class="finding-chat-slot" data-i="${r.findings.indexOf(x)}"></div></div>`;
   $("review").innerHTML = error
     + `<div class="Box"><div class="Box-header d-flex flex-items-center"><h2 class="Box-title flex-1">Review</h2><span class="color-fg-muted f6">${esc(state.models?.reviewModel)}</span></div>`
     + `<div class="Box-body"><dl class="mt-0"><dt>Intent</dt><dd>${md(r.intent) || "—"}</dd><dt>Approach</dt><dd>${md(r.approach) || "—"}</dd></dl></div></div>`
@@ -543,6 +550,7 @@ function renderReview() {
     + (findings.length ? findings.map(row).join("") : `<div class="Box-body color-fg-muted">The review found no confirmed problems.</div>`) + `</div>`
     + (r.openQuestions?.length ? `<div><h3 class="f5 mb-2">Open questions</h3><ul>${r.openQuestions.map((q) => `<li>${md(q)}</li>`).join("")}</ul></div>` : "")
     + `<div><h3 class="f5 mb-2">Summary of risks</h3><p class="mb-0">${md(r.bottomLine ?? r.overview)}</p></div>`;
+  mountFindingChats($("review"), "review", active);
 }
 
 // A finding link opens the Code tab and highlights that finding next to its hunk.
@@ -565,6 +573,7 @@ $("review").addEventListener("click", (e) => {
 // Anchor each hunk's notes next to its @@ row in the diff; cards are pushed down when they'd overlap.
 function layoutNotes() {
   const notesEl = $("notes");
+  const active = saveFocus();
   const groups = new Map();
   const add = (fi, hi, html, line = 0) => {
     const k = `${fi}:${hi}:${line}`;
@@ -607,6 +616,7 @@ function layoutNotes() {
     return `<div class="hunk-note Box"><div class="Box-header" title="${esc(f.path)}">${ICON.file}<span class="name">${esc(f.path.split("/").pop())}</span>${a.line ? `<span class="range">L${a.line}</span>` : h ? `<span class="range">${h.start === h.end ? `L${h.start}` : `L${h.start}–${h.end}`}</span>` : ""}</div>`
       + `<div class="Box-body">${a.html.join("")}</div></div>`;
   }).join("");
+  mountFindingChats(notesEl, "code", active);
   const items = [...$("notes-cards").children].map((el, i) => ({ el, top: anchors[i].top }));
   for (const el of chatEls.values()) {
     const row = rowFor(el.thread);
@@ -672,27 +682,8 @@ function createChat(t) {
   el.className = "hunk-note chat-note Box";
   el.innerHTML = `<div class="Box-header" title="${esc(t.path)}">${ICON.copilot}<span class="name">${esc(t.path.split("/").pop())}</span><span class="range">${t.side === "old" ? "Old " : ""}L${t.line}</span>`
     + `<button class="chat-close btn-octicon" type="button" aria-label="Close the chat about line ${t.line}">${ICON.x}</button></div>`
-    + `<div class="Box-body chat-msgs" aria-live="polite"></div>`
-    + `<form class="Box-footer chat-form"><textarea class="form-control" name="question" rows="2" placeholder="Ask Copilot about line ${t.line}" aria-label="Question about line ${t.line}"></textarea>`
-    + `<div class="chat-actions"><select class="form-select select-sm" name="model" aria-label="Model"></select><button class="btn btn-sm btn-primary" type="submit">Ask</button></div></form>`;
-  const form = el.querySelector("form");
-  fillChatModel(form.model, t.model ?? chatModel());
-  form.question.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
-  form.question.oninput = queueLayout;
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const question = form.question.value.trim(), t = el.thread;
-    if (!question || t.status === "running") return;
-    form.question.value = "";
-    updateChat(el, { ...t, model: form.model.value, status: "running", error: null, messages: [...t.messages, { role: "user", text: question }] });
-    try {
-      await api(`/api/ask?${q}`, { method: "POST", body: JSON.stringify({ thread: t.id, fi: t.fi, line: t.line, side: t.side, question, model: form.model.value }) });
-      el.draft = false;
-    } catch (x) {
-      form.question.value ||= question;
-      updateChat(el, { ...t, status: "error", error: x.message });
-    }
-  };
+    + `<div class="Box-body chat-msgs" aria-live="polite"></div>` + chatForm("Box-footer", `Ask Copilot about line ${t.line}`);
+  wireChat(el, t);
   el.querySelector(".chat-close").onclick = async () => {
     if (!el.draft) {
       try { await api(`/api/ask?${q}&thread=${encodeURIComponent(el.thread.id)}`, { method: "DELETE" }); } catch (x) {
@@ -708,6 +699,61 @@ function createChat(t) {
   updateChat(el, t);
   return el;
 }
+const chatForm = (cls, label) => `<form class="${cls} chat-form"><textarea class="form-control" name="question" rows="2" placeholder="${esc(label)}" aria-label="${esc(label)}"></textarea>`
+  + `<div class="chat-actions"><select class="form-select select-sm" name="model" aria-label="Model"></select><button class="btn btn-sm btn-primary" type="submit">Ask</button></div></form>`;
+const newId = () => crypto.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2);
+function wireChat(el, t) {
+  const form = el.querySelector("form");
+  fillChatModel(form.model, t.model ?? chatModel());
+  form.question.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
+  // Finding chats re-render with their card, so only line chats re-layout while typing.
+  if (el.classList.contains("chat-note")) form.question.oninput = queueLayout;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const question = form.question.value.trim(), t = el.thread;
+    if (!question || t.status === "running") return;
+    form.question.value = "";
+    updateChat(el, { ...t, model: form.model.value, status: "running", error: null, messages: [...t.messages, { role: "user", text: question }] });
+    try {
+      await api(`/api/ask?${q}`, { method: "POST", body: JSON.stringify({ thread: t.id, fi: t.fi, line: t.line, side: t.side, finding: t.finding, question, model: form.model.value }) });
+      el.draft = false;
+    } catch (x) {
+      form.question.value ||= question;
+      updateChat(el, { ...t, status: "error", error: x.message });
+    }
+  };
+}
+// Finding chats live in a collapsed <details> under each finding. The element persists across
+// layouts (cards are re-rendered) so the open state and draft text survive.
+// The Review and Code tabs each get their own element for a finding; both show the same thread.
+const findingChats = new Map(); // "code:3" / "review:3" → <details>
+let findingsKey = "";
+const saveFocus = () => {
+  const el = document.activeElement;
+  return el?.closest?.(".finding-chat") ? { el, sel: [el.selectionStart, el.selectionEnd] } : null;
+};
+function mountFindingChats(root, scope, active) {
+  for (const slot of root.querySelectorAll(".finding-chat-slot")) slot.replaceWith(findingChat(+slot.dataset.i, scope));
+  if (active?.el.isConnected && document.activeElement !== active.el) {
+    active.el.focus({ preventScroll: true });
+    if (active.sel[0] != null) active.el.setSelectionRange(...active.sel);
+  }
+}
+function findingChat(i, scope) {
+  let el = findingChats.get(`${scope}:${i}`);
+  if (el) return el;
+  const t = state.chats?.find((c) => c.finding === i) ?? { id: `finding-${i}`, finding: i, messages: [] };
+  el = document.createElement("details");
+  el.className = "finding-chat";
+  el.innerHTML = `<summary>${ICON.copilot}Ask Copilot</summary><div class="chat-msgs" aria-live="polite"></div>` + chatForm("", "Ask Copilot about this finding");
+  el.draft = !t.messages.length;
+  el.open = !el.draft;
+  el.ontoggle = () => { if (el.open) el.querySelector("textarea").focus({ preventScroll: true }); queueLayout(); };
+  wireChat(el, t);
+  findingChats.set(`${scope}:${i}`, el);
+  updateChat(el, t);
+  return el;
+}
 function updateChat(el, t) {
   el.thread = t;
   const html = t.messages.map((m) => m.role === "user" ? `<div class="chat-q">${md(m.text)}</div>` : `<div class="chat-a">${md(m.text)}</div>`).join("")
@@ -719,7 +765,13 @@ function updateChat(el, t) {
 }
 function syncChats() {
   const threads = state.chats ?? [];
+  const k = (state.review?.findings ?? []).map((x) => x.title).join("\n");
+  if (k !== findingsKey) { findingsKey = k; findingChats.clear(); }
   for (const t of threads) {
+    if (t.finding != null) {
+      for (const el of findingChats.values()) if (el.thread.finding === t.finding) { el.draft = false; updateChat(el, t); }
+      continue;
+    }
     const el = chatEls.get(t.id);
     if (!el) createChat(t);
     else { el.draft = false; updateChat(el, t); }
@@ -730,8 +782,7 @@ function openChat(a) {
   setTab("code");
   let el = [...chatEls.values()].find(({ thread: t }) => t.fi === a.fi && t.side === a.side && t.line === a.line);
   if (!el) {
-    const id = crypto.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2);
-    el = createChat({ id, ...a, path: files[a.fi].path, messages: [] });
+    el = createChat({ id: newId(), ...a, path: files[a.fi].path, messages: [] });
     el.draft = true;
   }
   layoutNotes();
@@ -876,7 +927,7 @@ function refreshModels() {
       + choices.map((m) => `<option value="${esc(m.id)}">${esc(m.name ?? m.id)}</option>`).join("");
     el.value = selected;
   }
-  for (const el of chatEls.values()) fillChatModel(el.querySelector("select"), el.querySelector("select").value);
+  for (const el of [...chatEls.values(), ...findingChats.values()]) fillChatModel(el.querySelector("select"), el.querySelector("select").value);
   try { selectedModels(); $("model-error").textContent = ""; }
   catch (error) { $("model-error").textContent = error.message; }
 }
