@@ -311,6 +311,7 @@ const askWorkflow = defineWorkflow({
         const r = await ctx.agent(
             [
                 `PR: ${st.meta.title} (${st.key})`,
+                st.review?.intent && `Review summary. Intent: ${st.review.intent}${st.review.approach ? ` Approach: ${st.review.approach}` : ""}`,
                 `${subject} Answer the last question briefly and directly. You may read files in the working directory if it is this repository. Do not modify files, push, or post comments.`,
                 STE,
                 EMPHASIS,
