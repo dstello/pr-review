@@ -4,7 +4,7 @@
 // Results are saved per PR, head, base and model pair; the UI lists, opens and deletes saved reviews.
 
 import { createServer } from "node:http";
-import { readFile, writeFile, mkdir, readdir, stat, unlink } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { join, dirname, extname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -39,7 +39,11 @@ function parseRef(pr) {
 }
 
 function placeFinding(files, finding) {
-    const fi = files.findIndex((f) => f.path === finding.file || f.path.endsWith("/" + finding.file) || finding.file?.endsWith("/" + f.path));
+    let fi = files.findIndex((f) => f.path === finding.file);
+    if (fi < 0 && finding.file) {
+        const matches = files.map((f, i) => f.path.endsWith("/" + finding.file) || finding.file.endsWith("/" + f.path) ? i : -1).filter((i) => i >= 0);
+        if (matches.length === 1) fi = matches[0];
+    }
     if (fi < 0) return { ...finding, fi: -1, hi: -1 };
     const hunks = files[fi].hunks;
     let hi = hunks.findIndex((h) => finding.line >= h.start && finding.line <= h.end);
@@ -50,19 +54,33 @@ function placeFinding(files, finding) {
     return { ...finding, fi, hi };
 }
 
-// The diff depends on the head and the base branch; the results depend on the models too.
-const identity = (meta, models) => `${meta.headRefOid}:${meta.baseRefName}:${models.hunkModel}:${models.reviewModel}`;
-const cachePath = (st) => join(ARTIFACTS, `${st.repo.replace("/", "__")}-${st.num}-${createHash("sha1").update(identity(st.meta, st.models)).digest("hex").slice(0, 12)}-v6.json`);
+// The diff depends on both commits; the results depend on the models too.
+const identity = (meta, models) => `${meta.headRefOid}:${meta.baseRefName}:${meta.baseRefOid}:${models.hunkModel}:${models.reviewModel}`;
+const cachePath = (st) => join(ARTIFACTS, st.file ?? `${st.repo.replace("/", "__")}-${st.num}-${createHash("sha1").update(identity(st.meta, st.models)).digest("hex").slice(0, 12)}-v6.json`);
+const saves = new Map();
 
 async function save(st) {
-    await mkdir(ARTIFACTS, { recursive: true });
     const { key, repo, num, meta, stack, diff, notes, review, models, chats } = st;
-    await writeFile(cachePath(st), JSON.stringify({ key, repo, num, meta, stack, diff, notes, review, models, chats }));
+    const path = cachePath(st), data = JSON.stringify({ key, repo, num, meta, stack, diff, notes, review, models, chats });
+    // Each caller reports its own error. A failed write must not block later saves.
+    const pending = (saves.get(path) ?? Promise.resolve()).catch(() => {}).then(async () => {
+        await mkdir(ARTIFACTS, { recursive: true });
+        const tmp = `${path}.${randomUUID()}.tmp`;
+        try {
+            await writeFile(tmp, data);
+            await rename(tmp, path);
+        } finally {
+            await unlink(tmp).catch((error) => { if (error.code !== "ENOENT") throw error; });
+        }
+    });
+    saves.set(path, pending);
+    try { await pending; }
+    finally { if (saves.get(path) === pending) saves.delete(path); }
 }
 
 function annotations(st) {
-    const { status, error, progress, notes, review, meta, stack, models, chats } = st;
-    return { status, error, progress, notes, review, meta, stack: stack ?? null, models, chats, file: status === "done" ? basename(cachePath(st)) : null };
+    const { status, error, saveError, progress, notes, review, meta, stack, models, chats } = st;
+    return { status, error, saveError: saveError ?? null, progress, notes, review, meta, stack: stack ?? null, models, chats, file: status === "done" ? basename(cachePath(st)) : null };
 }
 
 function push(st) {
@@ -90,15 +108,19 @@ async function stackOf(repo, num) {
 async function load(input) {
     const { repo, num, key } = parseRef(input.pr);
     const models = { hunkModel: input.hunkModel || DEFAULT_MODELS.hunkModel, reviewModel: input.reviewModel || DEFAULT_MODELS.reviewModel };
-    const [view, stack] = await Promise.all([gh(["pr", "view", num, "--repo", repo, "--json", "title,body,url,headRefOid,headRefName,baseRefName,author"]), stackOf(repo, num)]);
+    const [view, stack] = await Promise.all([gh(["pr", "view", num, "--repo", repo, "--json", "title,body,url,headRefOid,headRefName,baseRefName,baseRefOid,author"]), stackOf(repo, num)]);
     const meta = JSON.parse(view);
     const existing = states.get(key);
     if (existing && (existing.status === "running" || identity(existing.meta, existing.models) === identity(meta, models))) return Object.assign(existing, { stack });
     const st = { key, repo, num, meta, stack, models, notes: {}, review: null, chats: [], status: "idle", error: null, progress: { done: 0, total: 0 } };
-    const cached = await readFile(cachePath(st), "utf8").then(JSON.parse, () => null);
+    const cached = await readFile(cachePath(st), "utf8").then(JSON.parse).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw new CanvasError("invalid_review", `Cannot load saved review ${basename(cachePath(st))}: ${error.message}`);
+    });
     if (cached) Object.assign(st, { diff: cached.diff, notes: cached.notes, review: cached.review, chats: settle(cached.chats), status: "done" });
     else st.diff = await gh(["pr", "diff", num, "--repo", repo]);
     st.files = parseDiff(st.diff);
+    if (st.review) st.review.findings = st.review.findings.map((x) => placeFinding(st.files, x));
     states.set(key, st);
     return st;
 }
@@ -110,18 +132,23 @@ async function restore(file) {
     if (!SAVED_RE.test(file)) throw new CanvasError("invalid_review", `Unknown review "${file}"`);
     const c = JSON.parse(await readFile(join(ARTIFACTS, file), "utf8"));
     if (states.get(c.key)?.status === "running") return states.get(c.key);
-    const st = { ...c, chats: settle(c.chats), status: "done", error: null, progress: { done: 0, total: 0 }, files: parseDiff(c.diff) };
+    const st = { ...c, file, chats: settle(c.chats), status: "done", error: null, progress: { done: 0, total: 0 }, files: parseDiff(c.diff) };
+    if (st.review) st.review.findings = st.review.findings.map((x) => placeFinding(st.files, x));
     states.set(st.key, st);
     return st;
 }
 
 // ponytail: parses every saved file per call; add a summary index if the list gets long.
 async function listReviews() {
-    const names = (await readdir(ARTIFACTS).catch(() => [])).filter((n) => SAVED_RE.test(n));
+    const names = (await readdir(ARTIFACTS).catch((error) => { if (error.code === "ENOENT") return []; throw error; })).filter((n) => SAVED_RE.test(n));
     const saved = await Promise.all(names.map(async (file) => {
         const path = join(ARTIFACTS, file);
-        const [c, s] = await Promise.all([readFile(path, "utf8").then(JSON.parse), stat(path)]);
-        return { file, key: c.key, title: c.meta.title, models: c.models, status: "done", findings: c.review?.findings?.length ?? 0, updatedAt: s.mtimeMs };
+        try {
+            const [c, s] = await Promise.all([readFile(path, "utf8").then(JSON.parse), stat(path)]);
+            return { file, key: c.key, title: c.meta.title, models: c.models, status: "done", findings: c.review?.findings?.length ?? 0, updatedAt: s.mtimeMs };
+        } catch (error) {
+            return { file, title: file, status: "error", error: `Cannot read saved review: ${error.message}`, updatedAt: 0 };
+        }
     }));
     const live = [...states.values()].filter((st) => st.status !== "done")
         .map((st) => ({ file: null, key: st.key, title: st.meta.title, models: st.models, status: st.status, findings: 0, updatedAt: Date.now() }));
@@ -178,6 +205,7 @@ async function analyze(st, models) {
         return;
     }
     if (st.status === "running") return;
+    if (identity(st.meta, st.models) !== identity(st.meta, selected)) delete st.file;
     st.models = selected;
     Object.assign(st, { status: "running", error: null, notes: {}, review: null, chats: st.chats.filter((c) => c.finding == null), progress: { done: 0, total: hunkTargets(st).length + 1 } });
     push(st);
@@ -190,6 +218,7 @@ async function analyze(st, models) {
         if (run.status !== "completed") throw new Error(`analysis ${run.status}: ${JSON.stringify(run.failure ?? run.error ?? "")}`);
         st.status = "done";
         await save(st);
+        st.saveError = null;
     } catch (e) {
         st.status = "error";
         st.error = String(e?.message ?? e);
@@ -239,9 +268,8 @@ const analyzeWorkflow = defineWorkflow({
                 ].join("\n\n"),
                 { label: "review", model: st.models.reviewModel, schema: REVIEW_SCHEMA },
             );
-            st.review = r
-                ? { ...r, findings: r.findings.map((x) => placeFinding(st.files, x)) }
-                : { intent: "", approach: "", bottomLine: "The review model did not return a result.", openQuestions: [], findings: [] };
+            if (!r) throw new Error("The review model did not return a result. Analyze the PR again.");
+            st.review = { ...r, findings: r.findings.map((x) => placeFinding(st.files, x)) };
             st.progress.done++;
             push(st);
             return null;
@@ -283,10 +311,21 @@ async function ask(st, { thread, fi, line, side, finding, question, model }) {
         } catch (e) {
             Object.assign(t, { status: "error", error: String(e?.message ?? e) });
         }
-        if (st.status === "done") await save(st).catch(() => {});
-        push(st);
+        if (st.status === "done") await persistChats(st);
+        else push(st);
     })();
     return t.id;
+}
+
+async function persistChats(st) {
+    try {
+        await save(st);
+        st.saveError = null;
+    } catch (error) {
+        st.saveError = `Cannot save the conversation: ${error.message}`;
+    }
+    push(st);
+    return !st.saveError;
 }
 
 const ANSWER_SCHEMA = { type: "object", required: ["answer"], properties: { answer: { type: "string" } }, additionalProperties: false };
@@ -383,6 +422,10 @@ async function ensureServer() {
                 return json(200, { ok: true });
             }
             if (url.pathname === "/api/ask" && req.method === "POST") return json(200, { thread: await ask(st, await readJson(req)) });
+            if (url.pathname === "/api/save" && req.method === "POST") {
+                if (st.status !== "done") throw new CanvasError("not_ready", "Wait for the review to finish before saving.");
+                return await persistChats(st) ? json(200, { ok: true }) : json(500, { error: st.saveError });
+            }
             if (url.pathname === "/api/ask" && req.method === "DELETE") {
                 st.chats = st.chats.filter((c) => c.id !== url.searchParams.get("thread") || c.status === "running");
                 if (st.status === "done") await save(st);

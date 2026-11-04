@@ -30,6 +30,7 @@ export function hunkAt(file, line, side = "new") {
         let o = +m[1], n = +m[2], hit = false;
         const lines = h.lines.map((l) => {
             const c = l[0];
+            if (c !== " " && c !== "+" && c !== "-") return "  " + l;
             const here = side === "old" ? c !== "+" && o === line : c !== "-" && n === line;
             if (c !== "+") o++;
             if (c !== "-") n++;

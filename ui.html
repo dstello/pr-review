@@ -316,13 +316,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 // Inline markdown subset: `code`, **bold**, __underline__, *italic* / _italic_, and links for
 // #123, owner/repo#123 and github.com issue or PR URLs. Code spans are not formatted.
 const REPO = /^[\w.-]+\/[\w.-]+(?=#\d+$)/.exec(key ?? "")?.[0];
-const REF_RE = /\bhttps:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)[^\s<]*|(?<![\w/&;])([\w.-]+\/[\w.-]+)?#(\d+)\b/g;
+const REF_RE = /\bhttps:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)(?:(?!&(?:quot|lt|gt);)[^\s<])*|(?<![\w/&;])([\w.-]+\/[\w.-]+)?#(\d+)\b/g;
 const refLink = (m, urlRepo, urlNum, refRepo, refNum) => {
   const repo = urlRepo ?? refRepo ?? REPO, num = urlNum ?? refNum;
   if (!repo) return m;
-  const href = urlRepo ? m : `https://github.com/${repo}/issues/${num}`;
+  const suffix = urlRepo ? m.match(/[.,!?:;)\]}]+$/)?.[0] ?? "" : "";
+  const href = urlRepo ? m.slice(0, m.length - suffix.length) : `https://github.com/${repo}/issues/${num}`;
   const label = urlRepo || refRepo ? (repo === REPO ? `#${num}` : `${repo}#${num}`) : m;
-  return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+  return `<a href="${href}" target="_blank" rel="noopener">${label}</a>${suffix}`;
 };
 const md = (s) => esc(s).split(/(`[^`]+`)/).map((part, i) => {
   if (i % 2) return `<code>${part.slice(1, -1)}</code>`;
@@ -385,7 +386,6 @@ function renderDiff() {
     colorScheme: "dark", synchronisedScroll: true, fileContentToggle: false,
   });
   ui.draw();
-  ui.highlightCode();
   wrappers().forEach((w, fi) => {
     const hd = w.querySelector(".d2h-file-header");
     w.dataset.fi = fi;
@@ -528,8 +528,9 @@ function reviewCoverage() {
 }
 
 function renderReview() {
+  syncChats();
   const r = state.review, active = saveFocus();
-  const error = (state.error ? `<div class="flash flash-error">The analysis failed: ${esc(state.error)}</div>` : "") + reviewCoverage() + hunkCoverage();
+  const error = (state.error ? `<div class="flash flash-error">The analysis failed: ${esc(state.error)}</div>` : "") + saveWarning() + reviewCoverage() + hunkCoverage();
   if (!r) {
     $("review").innerHTML = error + (state.status === "idle" ? ANALYZE_PROMPT : error ? "" : state.status === "running"
       ? `<p class="color-fg-muted">${esc(state.models?.reviewModel)} is reviewing the pull request<span class="AnimatedEllipsis"></span></p>`
@@ -591,7 +592,7 @@ function layoutNotes() {
   $("code-count").textContent = findings.length || "";
 
   const unplaced = findings.filter((x) => x.fi < 0);
-  const top = (state.status === "idle" ? ANALYZE_PROMPT : "") + hunkCoverage() + (unplaced.length
+  const top = (state.status === "idle" ? ANALYZE_PROMPT : "") + saveWarning() + hunkCoverage() + (unplaced.length
     ? `<div class="Box mb-3"><div class="Box-header"><h2 class="Box-title">Findings outside a hunk</h2></div>${unplaced.map((x) => `<div class="Box-row">${findingHtml(x)}</div>`).join("")}</div>`
     : "");
   syncChats();
@@ -670,7 +671,7 @@ askBtn.onclick = (e) => {
 };
 
 const chatEls = new Map(); // thread id → card element; kept across layouts so drafts and focus survive
-const chatModel = () => $("hunk-model").value || state.models?.hunkModel;
+const chatModel = () => $("hunk-model").disabled ? state.models?.hunkModel : $("hunk-model").value || state.models?.hunkModel;
 function fillChatModel(sel, selected) {
   const choices = catalog.length ? modelChoices(catalog, "hunkModel", selected) : [];
   sel.innerHTML = (choices.some((m) => m.id === selected) ? "" : `<option value="${esc(selected)}">${esc(selected)}</option>`)
@@ -705,13 +706,14 @@ const newId = () => crypto.randomUUID?.() ?? Date.now().toString(36) + Math.rand
 function wireChat(el, t) {
   const form = el.querySelector("form");
   fillChatModel(form.model, t.model ?? chatModel());
+  form.model.onchange = () => updateChat(el, el.thread);
   form.question.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
   // Finding chats re-render with their card, so only line chats re-layout while typing.
   if (el.classList.contains("chat-note")) form.question.oninput = queueLayout;
   form.onsubmit = async (e) => {
     e.preventDefault();
     const question = form.question.value.trim(), t = el.thread;
-    if (!question || t.status === "running") return;
+    if (!question || t.status === "running" || el.querySelector("button[type=submit]").disabled) return;
     form.question.value = "";
     updateChat(el, { ...t, model: form.model.value, status: "running", error: null, messages: [...t.messages, { role: "user", text: question }] });
     try {
@@ -761,11 +763,12 @@ function updateChat(el, t) {
     + (t.error ? `<div class="flash flash-error">The question failed: ${esc(t.error)}</div>` : "");
   const msgs = el.querySelector(".chat-msgs");
   if (msgs.innerHTML !== html) { msgs.innerHTML = html; msgs.scrollTop = msgs.scrollHeight; }
-  el.querySelector("button[type=submit]").disabled = t.status === "running";
+  const model = el.querySelector("select").value;
+  el.querySelector("button[type=submit]").disabled = t.status === "running" || !!modelLoadError || !catalog.some((m) => m.id === model);
 }
 function syncChats() {
   const threads = state.chats ?? [];
-  const k = (state.review?.findings ?? []).map((x) => x.title).join("\n");
+  const k = JSON.stringify(state.review?.findings ?? []);
   if (k !== findingsKey) { findingsKey = k; findingChats.clear(); }
   for (const t of threads) {
     if (t.finding != null) {
@@ -884,6 +887,15 @@ async function analyzeNow() {
 $("rerun").onclick = analyzeNow;
 const ANALYZE_PROMPT = `<div class="analyze-prompt"><p class="mb-3">This pull request has no analysis yet.</p><button class="btn btn-primary analyze-now" type="button">Analyze</button></div>`;
 document.addEventListener("click", (e) => { if (e.target.closest(".analyze-now")) analyzeNow(); });
+const saveWarning = () => state.saveError ? `<div class="flash flash-error" role="alert">${esc(state.saveError)} <button type="button" class="btn btn-sm retry-save">Retry save</button></div>` : "";
+document.addEventListener("click", async (e) => {
+  const button = e.target.closest(".retry-save");
+  if (!button) return;
+  button.disabled = true;
+  try { await api(`/api/save?${q}`, { method: "POST" }); state.saveError = null; }
+  catch (error) { state.saveError = error.message; }
+  finally { renderReview(); queueLayout(); }
+});
 
 const sizeVar = () => {
   document.documentElement.style.setProperty("--sh", $("scroller").clientHeight + "px");
@@ -927,7 +939,10 @@ function refreshModels() {
       + choices.map((m) => `<option value="${esc(m.id)}">${esc(m.name ?? m.id)}</option>`).join("");
     el.value = selected;
   }
-  for (const el of [...chatEls.values(), ...findingChats.values()]) fillChatModel(el.querySelector("select"), el.querySelector("select").value);
+  for (const el of [...chatEls.values(), ...findingChats.values()]) {
+    fillChatModel(el.querySelector("select"), el.querySelector("select").value);
+    updateChat(el, el.thread);
+  }
   try { selectedModels(); $("model-error").textContent = ""; }
   catch (error) { $("model-error").textContent = error.message; }
 }
@@ -945,6 +960,7 @@ async function loadModels() {
   } catch (error) {
     modelLoadError = `Cannot load models: ${error.message}`;
     $("model-error").textContent = modelLoadError;
+    for (const el of [...chatEls.values(), ...findingChats.values()]) updateChat(el, el.thread);
   }
 }
 document.querySelectorAll(".new-review").forEach((form) => {
@@ -975,10 +991,12 @@ async function renderReviews() {
   $("review-count").textContent = list.length || "";
   $("review-list").innerHTML = list.length ? list.map((r) => {
     const current = r.key === key && (!r.file || !state?.file || r.file === state.file);
+    const del = r.file ? `<button class="review-delete btn-octicon" type="button" data-file="${esc(r.file)}" aria-label="Delete the saved review of ${esc(r.key ?? r.file)}">${ICON.trash}</button>` : "";
+    if (r.error) return `<div class="review-item"><span class="min-width-0 flex-1 p-2"><b>${esc(r.title)}</b><span class="d-block f6 color-fg-danger">${esc(r.error)}</span></span>${del}</div>`;
     return `<div class="review-item" role="menuitemradio" aria-checked="${current}">`
       + `<button class="review-open" type="button" data-key="${esc(r.key)}" data-file="${esc(r.file ?? "")}">${ICON.check}<span class="min-width-0 flex-1">`
       + `<span class="name">${esc(r.title)}</span><span class="d-block f6 color-fg-muted">${esc(r.key)} · ${reviewStatus(r)} · ${when(r.updatedAt)}</span></span></button>`
-      + (r.file ? `<button class="review-delete btn-octicon" type="button" data-file="${esc(r.file)}" aria-label="Delete the saved review of ${esc(r.key)}">${ICON.trash}</button>` : "")
+      + del
       + `</div>`;
   }).join("") : `<div class="SelectMenu-blankslate">There are no saved reviews.</div>`;
 }
@@ -1075,11 +1093,11 @@ renderTree();
 setFormat(view.format);
 setTests(view.hideTests);
 
-let lastReview = JSON.stringify([state.review, state.error, state.status]);
+let lastReview = JSON.stringify([state.review, state.error, state.saveError, state.status]);
 new EventSource(`/api/events?${q}`).onmessage = (e) => {
   Object.assign(state, JSON.parse(e.data));
   renderHeader();
-  const review = JSON.stringify([state.review, state.error, state.status]);
+  const review = JSON.stringify([state.review, state.error, state.saveError, state.status]);
   if (review !== lastReview) { lastReview = review; renderReview(); renderTree(); }
   queueLayout();
 };

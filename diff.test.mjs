@@ -36,3 +36,19 @@ test("hunkAt marks the target line on either side", () => {
     assert.match(hunkAt(f, 11, "new"), /^@@ -10,2 \+10,3 @@\n   a\n>>\+b/);
     assert.equal(hunkAt(f, 50, "new"), null);
 });
+
+test("hunkAt does not count missing-newline markers as source lines", () => {
+    const [f] = parseDiff(`diff --git a/a b/a
+--- a/a
++++ b/a
+@@ -1 +1,2 @@
+-old
+\\ No newline at end of file
++first
++second
+\\ No newline at end of file
+`);
+    assert.match(hunkAt(f, 2, "new"), /^>>\+second$/m);
+    assert.match(hunkAt(f, 1, "old"), /^>>-old$/m);
+    assert.equal(hunkAt(f, 3, "new"), null);
+});

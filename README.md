@@ -14,6 +14,8 @@ Requires the GitHub Copilot app with canvas extensions and an authenticated GitH
 Ask Copilot to open a PR in the **PR Review** canvas. Choose models in Settings, then select **Analyze**.
 The canvas does not post review comments to GitHub.
 
+Reviews are local snapshots. If a conversation cannot be saved, keep the canvas open and select **Retry save**.
+
 ## Screenshots
 
 ### Review
