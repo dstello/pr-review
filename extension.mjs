@@ -207,7 +207,7 @@ async function analyze(st, models) {
     if (st.status === "running") return;
     if (identity(st.meta, st.models) !== identity(st.meta, selected)) delete st.file;
     st.models = selected;
-    Object.assign(st, { status: "running", error: null, notes: {}, review: null, chats: st.chats.filter((c) => c.finding == null), progress: { done: 0, total: hunkTargets(st).length + 1 } });
+    Object.assign(st, { status: "running", error: null, notes: {}, review: null, chats: st.chats.filter((c) => c.finding == null && c.hi == null), progress: { done: 0, total: hunkTargets(st).length + 1 } });
     push(st);
     try {
         const run = await session.workflow.run(WORKFLOW, {
@@ -280,14 +280,19 @@ const analyzeWorkflow = defineWorkflow({
 });
 
 // Line chat: one thread per question anchor; the small model answers by default.
-async function ask(st, { thread, fi, line, side, finding, question, model }) {
+async function ask(st, { thread, fi, hi, line, side, finding, question, model }) {
     question = String(question ?? "").trim();
     if (!question) throw new CanvasError("invalid_question", "Type a question.");
     let t = st.chats.find((c) => c.id === thread);
     const chosen = model || t?.model || st.models.hunkModel;
     validateModels(await modelCatalog(), { ...st.models, hunkModel: chosen });
     const id = /^[\w-]{1,64}$/.test(thread ?? "") ? thread : randomUUID();
-    if (!t && finding != null) {
+    if (!t && hi != null) {
+        const f = st.files[fi], h = f?.hunks[hi], note = st.notes[`${fi}:${hi}`];
+        if (!Number.isInteger(fi) || !Number.isInteger(hi) || !h || !note || note.trivial) throw new CanvasError("invalid_hunk", "The explanation is not loaded. Analyze the PR again.");
+        t = { id, fi, hi, path: f.path, messages: [] };
+        st.chats.push(t);
+    } else if (!t && finding != null) {
         const x = st.review?.findings?.[finding];
         if (!x) throw new CanvasError("invalid_finding", "The finding is not loaded. Analyze the PR again.");
         t = { id, finding: +finding, fi: x.fi, line: x.line ?? 0, side: "new", path: x.file, messages: [] };
@@ -333,7 +338,7 @@ const ANSWER_SCHEMA = { type: "object", required: ["answer"], properties: { answ
 const askWorkflow = defineWorkflow({
     meta: {
         name: ASK_WORKFLOW,
-        description: "Internal to the PR Review canvas: answers a question about one diff line. args: { key: string, id: string }.",
+        description: "Internal to the PR Review canvas: answers a question about a finding, explanation, or diff line. args: { key: string, id: string }.",
         phases: [{ title: "Answer" }],
         argsSchema: { type: "object", required: ["key", "id"], properties: { key: { type: "string" }, id: { type: "string" } } },
     },
@@ -341,11 +346,14 @@ const askWorkflow = defineWorkflow({
         const st = states.get(ctx.args.key);
         const t = st?.chats.find((c) => c.id === ctx.args.id);
         if (!t) throw new Error(`Question ${ctx.args.id} is not loaded in the canvas`);
-        const hunk = (hunkAt(st.files[t.fi], t.line, t.side) ?? "").slice(0, 8000);
+        const h = t.hi != null ? st.files[t.fi]?.hunks[t.hi] : null;
+        const hunk = (h ? [h.header, ...h.lines].join("\n") : hunkAt(st.files[t.fi], t.line, t.side) ?? "").slice(0, 8000);
         const x = t.finding != null ? st.review?.findings?.[t.finding] : null;
         const subject = x
             ? `A code reviewer asks about this review finding on \`${t.path}\`${t.line ? ` line ${t.line}` : ""}:\n${JSON.stringify(x, ["severity", "title", "scenario", "impact", "evidence", "detail", "fix"], 2)}\nExplain or defend the finding. If the question shows that the finding is wrong, say so.`
-            : `A code reviewer asks about line ${t.line} (${t.side} side) of \`${t.path}\`. The line is marked with ">>" in the hunk below.`;
+            : h
+                ? `A code reviewer asks about this hunk explanation for \`${t.path}\`:\n${st.notes[`${t.fi}:${t.hi}`]?.summary ?? ""}\nExplain or correct the explanation using the diff below.`
+                : `A code reviewer asks about line ${t.line} (${t.side} side) of \`${t.path}\`. The line is marked with ">>" in the hunk below.`;
         const history = t.messages.map((m) => `${m.role === "user" ? "Reviewer" : "You"}: ${m.text}`).join("\n\n");
         const r = await ctx.agent(
             [

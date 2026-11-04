@@ -92,7 +92,7 @@ test("the first chat sync and answer updates preserve both tab controls", () => 
     const finding = { title: "Risk", line: 1 };
     const c = {
         state: { review: { findings: [finding] }, chats: threads },
-        findingChats: controls, findingsKey: "", chatEls: new Map(),
+        findingChats: controls, hunkChats: new Map(), findingsKey: "", chatEls: new Map(),
         updateChat: (el, t) => { el.thread = t; }, createChat: () => assert.fail("not a line chat"),
         saveFocus: () => null, saveWarning: () => "", reviewCoverage: () => "", hunkCoverage: () => "",
         SEV_ORDER: ["warning"], sevLabel: () => "", md: x => x ?? "", loc: () => "",
@@ -150,4 +150,32 @@ test("clicking the trash SVG keeps the menu open for confirmation", async () => 
     handlers.click(event);
     assert.equal(button.dataset.armed, "1");
     assert.equal(menu.open, true);
+});
+
+test("explanation chats keep drafts across layouts and receive saved answers", () => {
+    const hunkChats = new Map(), st = { notes: { "0:1": { summary: "Change x" } }, chats: [] };
+    const c = {
+        state: st, hunkChats, findingChats: new Map(), chatEls: new Map(), findingsKey: "[]",
+        createInlineChat: (t, subject) => ({ thread: t, subject, draft: true }),
+        updateChat: (el, t) => { el.thread = t; },
+        createChat: () => assert.fail("not a line chat"),
+    };
+    runInNewContext(section("function hunkChat(", "function createInlineChat(")
+        + section("function syncChats()", "function openChat(")
+        + ";Object.assign(globalThis, { hunkChat, syncChats });", c);
+    const el = c.hunkChat(0, 1);
+    el.question = "Why?";
+    c.syncChats();
+    assert.equal(c.hunkChat(0, 1), el);
+    assert.equal(el.question, "Why?");
+    assert.equal(el.subject, "explanation");
+    st.chats.push({ id: "hunk-0-1", fi: 0, hi: 1, messages: [{ text: "Because" }] });
+    c.syncChats();
+    assert.equal(el.thread.messages[0].text, "Because");
+    assert.equal(el.draft, false);
+    hunkChats.clear();
+    assert.equal(c.hunkChat(0, 1).thread, st.chats[0]);
+    st.notes = {};
+    c.syncChats();
+    assert.equal(hunkChats.size, 0);
 });

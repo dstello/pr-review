@@ -4,7 +4,7 @@ A GitHub Copilot canvas for reviewing pull requests beside their code changes.
 
 - **Review:** a larger model explains the intent and reports risks with evidence and suggested fixes.
 - **Code:** a smaller model explains each hunk. Findings appear beside the relevant lines.
-- **Ask Copilot:** ask questions about a finding or code line, with context added automatically.
+- **Ask Copilot:** ask questions about a finding, hunk explanation, or code line, with context added automatically.
 
 Includes syntax highlighting, unified and split diffs, a collapsible file tree, stack navigation, and saved reviews. Settings control models and test-file visibility.
 

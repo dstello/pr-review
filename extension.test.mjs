@@ -181,3 +181,40 @@ test("chat save failures stay visible until a successful retry", async () => {
     assert.equal(st.saveError, null);
     assert.equal(updates.length, 2);
 });
+
+test("explanation questions validate their hunk and retain its anchor", async () => {
+        const st = state();
+        st.files = [{ path: "a.js", hunks: [{ header: "@@ -1 +1 @@", lines: ["-x", "+y"] }] }];
+        st.notes["0:0"] = { summary: "Replace x with y" };
+        const c = context({
+            modelCatalog: async () => [], validateModels: () => {}, push: () => {},
+            ASK_WORKFLOW: "ask", session: { workflow: { run: async () => ({ status: "completed" }) } },
+            persistChats: async () => {},
+        });
+        runInNewContext(section("async function ask(", "async function persistChats(") + ";globalThis.ask = ask;", c);
+        await assert.rejects(c.ask(st, { fi: 0, hi: 2, question: "Why?" }), /explanation is not loaded/);
+        assert.equal(st.chats.length, 0);
+        await c.ask(st, { thread: "hunk-0-0", fi: 0, hi: 0, question: "Why?" });
+        assert.equal(st.chats[0].hi, 0);
+        assert.equal(st.chats[0].path, "a.js");
+        assert.equal(st.chats[0].messages[0].text, "Why?");
+    });
+
+    test("explanation answers include the explanation and deleted-only hunk, not the PR description", async () => {
+        const st = state();
+        st.meta.body = "Excluded description";
+        st.files = [{ path: "a.js", hunks: [{ header: "@@ -1 +0,0 @@", lines: ["-removed()"] }] }];
+        st.notes["0:0"] = { summary: "Remove the old call" };
+        st.chats = [{ id: "hunk-0-0", fi: 0, hi: 0, path: "a.js", model: "small", messages: [{ role: "user", text: "Why?" }] }];
+        const c = context({ defineWorkflow: x => x, ASK_WORKFLOW: "ask", STE: "", EMPHASIS: "", hunkAt: () => assert.fail("Use the exact hunk") });
+        c.states.set(st.key, st);
+        runInNewContext(section("const ANSWER_SCHEMA", "// One shared loopback server") + ";globalThis.workflow = askWorkflow;", c);
+        await c.workflow.run({ args: { key: st.key, id: "hunk-0-0" }, agent: async prompt => {
+            assert.match(prompt, /Remove the old call/);
+            assert.match(prompt, /-removed\(\)/);
+            assert.match(prompt, /Reviewer: Why\?/);
+            assert.ok(!prompt.includes("Excluded description"));
+            return { answer: "The call is obsolete." };
+        } });
+        assert.equal(st.chats[0].messages[1].text, "The call is obsolete.");
+    });
