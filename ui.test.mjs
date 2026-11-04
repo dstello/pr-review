@@ -7,6 +7,17 @@ import { test } from "node:test";
 const html = await readFile(new URL("./ui.html", import.meta.url), "utf8");
 const section = (start, end) => html.slice(html.indexOf(start), html.indexOf(end));
 
+test("Hide tests matches test-utils directories, not similar names", () => {
+    const c = { files: [] };
+    runInNewContext(section("const TEST_RE =", "const isTest =") + ";globalThis.matches = path => TEST_RE.test(path);", c);
+    for (const path of ["test-utils/helpers.js", "src/test-utils/helpers.js", "src/TEST-UTILS/helpers.js"]) {
+        assert.equal(c.matches(path), true, path);
+    }
+    for (const path of ["src/test-utils-extra/helpers.js", "src/my-test-utils/helpers.js", "src/test-utils.js"]) {
+        assert.equal(c.matches(path), false, path);
+    }
+});
+
 test("the UI module parses", () => {
     const script = html.split('<script type="module">')[1].split("</script>")[0];
     const result = spawnSync(process.execPath, ["--check", "--input-type=module"], { input: script, encoding: "utf8" });

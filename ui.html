@@ -338,7 +338,7 @@ const md = (s) => esc(s).split(/(`[^`]+`)/).map((part, i) => {
 }).join("");
 const hunkSummary = (s) => s.replace(/^this hunk\s+(\w)/i, (_, c) => c.toUpperCase());
 const view = { format: localStorage.getItem("prr-format") ?? "line-by-line", hideTests: localStorage.getItem("prr-tests") === "1" };
-const TEST_RE = /(^|\/)(__tests__|__mocks__|tests?|spec|testdata|fixtures)\/|[._-](test|spec|stories)\.[^/]+$|(^|\/)test_[^/]+$|_test\.go$|Tests?\.(cs|java|kt|swift)$/i;
+const TEST_RE = /(^|\/)(__tests__|__mocks__|tests?|test-utils|spec|testdata|fixtures)\/|[._-](test|spec|stories)\.[^/]+$|(^|\/)test_[^/]+$|_test\.go$|Tests?\.(cs|java|kt|swift)$/i;
 const isTest = (fi) => TEST_RE.test(files[fi].path);
 const shown = (fi) => !(view.hideTests && isTest(fi));
 // Viewed files are stored per PR in this browser only. Viewing a file folds it; a fold alone lasts for this page load.
